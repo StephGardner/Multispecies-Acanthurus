@@ -1,7 +1,7 @@
 ---
-title: "Multispecies Acanthurus - bacteria associated with the gastrointestinal tract and epilithic algal matrix diet source"
+title: "The gut microbiome of herbivorous surgeonfishes varies with available food source and range-expansion capacity"
 author: "S.Gardner"
-date: "2 February 2022"
+date: "16 October 2026"
 output: html_document
 ---
 # Load packages
@@ -20,7 +20,6 @@ library(genefilter)
 library(microbiome)
 library(tidyverse)
 library(scales)
-library(tidyheatmap)
 library(wesanderson)
 library(Biostrings)
 library(ggsci)
@@ -28,96 +27,23 @@ library(rstatix)
 library(ggpubr)
 ```
 
-# Data import
-
+# Load phyloseq objects
 ```{r}
-# Reference sequences
-seqs <- readDNAStringSet("ref_seq.fasta.txt")
-
-DNAStringsSet_to_df <- function(DNAStringSet){
-  seq_df <- data.frame(names = names(DNAStringSet),
-                       seqs = paste(DNAStringSet))
-  return(seq_df)
-}
-
-seq_df <- DNAStringsSet_to_df(seqs) %>%
-  mutate(names = sapply(str_split(names, "\\s+"), "[", 1))
-
-data <- read.table("Acanthurus_Multispp_Gut_Clean_Nr99_SG.txt", sep = "\t", header = TRUE)
-
-data_seqs <- left_join(data, seq_df, by = c("OTU_ID" = "names")) %>%
-  filter(is.na(seqs))
-
-# Load in feature table which is an OTU/Taxonomy table in one tsv file
-data <- read.table("Acanthurus_Multispp_Gut_Clean_Nr99_SG.txt", sep = "\t", header = TRUE) %>%
-  filter(!(OTU_ID %in% data_seqs$OTU_ID))
-
-# Create OTU table
-otutab <- data %>%
-  select(-SilvaId, -Identity, -kingdom, -phylum, -class, -order, -family, -genus, -species)
-rownames(otutab) <- otutab$OTU_ID
-otutab <- otutab %>% select(-OTU_ID)
-otutab <- otu_table(otutab, taxa_are_rows = TRUE)
-
-# Create tax table
-taxtab <- data %>%
-  select(OTU_ID, kingdom, phylum, class, order, family, genus, species) %>%
-  apply(2, function(x) gsub("^$|^ $", NA, x)) %>% # replace any empty cells with NA
-  replace_na("Unassigned") %>% # replace any cell with NA with "Unassigned"
-  as.data.frame() %>%
-  tibble::column_to_rownames(var = "OTU_ID") %>%
-  as.matrix() %>%
-  tax_table()
-
-# Load in the sample metadata file
-sampledata <- read.table("mappingmega_SG.txt", header = TRUE,sep = "\t")
-rownames(sampledata) <- sampledata$SampleID # rownames to match column names as above
-sampledata <- sample_data(sampledata)
-
-# Make the phyloseq object
-ps <- phyloseq(sampledata, otutab, taxtab, seqs)
-
-# Import tree and merge
-tree <- read_tree("fastree_result.tre")
-ps <- merge_phyloseq(ps, tree)
-
-## Data cleanup
-ps <- subset_taxa(ps, order != "Chloroplast")
-ps <- subset_taxa(ps, family != "Mitochondria")
-ps <- subset_taxa(ps, kingdom != "Unassigned")
-ps <- subset_taxa(ps, phylum != "Unassigned")
-ps <- subset_taxa(ps, kingdom != "Eukaryota")
-ps <- subset_taxa(ps, kingdom != "Archaea")
-
-# Remove zOTUs from negative controls
-contam <- read.csv("Contaminant.csv", header = FALSE)
-ps <- prune_taxa(!(taxa_names(ps) %in% contam$V1), ps)
-ps <- subset_samples(ps, Treatment != "Negative")
-
-ps <- prune_taxa(taxa_sums(ps) > 1, ps) # prune zOTUs that are not present in any of the samples
-
-ps <- subset_samples(ps, keep == "yes") # removing the EAM samples with no data
-
-ps <- prune_taxa(taxa_sums(ps) > 1, ps) # prune OTUs that are not present in any of the samples >1 (removes singletons)
-#saveRDS(ps, file = "ps.rds")
-
-ps.fish <- subset_samples(ps, Sample_Type == "Fish") # keeping fish samples only
-ps.fish <- prune_taxa(taxa_sums(ps.fish) > 1, ps.fish) # Remove any singletons that have been created due to subsetting
-
-ps.eam <- subset_samples(ps, Sample_Type == "EAM") # Keeping EAM samples only
-ps.eam <- prune_taxa(taxa_sums(ps.eam) > 1, ps.eam)
-
-ps.water <- subset_samples(ps, Sample_Type == "Water") # Keeping water samples only
-ps.water <- prune_taxa(taxa_sums(ps.water) > 1, ps.water)
+# WHOLE DATASET
+ps <- readRDS("ps.GTDB232.rds") # Merged fish gut sections, using GTDB v232, April 30 2026
+ps.fish <- readRDS("ps.fishGTDB232.rds") # Merged fish gut sections
+ps.eam <- readRDS("ps.eamGTDB232.rds")
+#ps.water <- readRDS("ps.waterGTDB232.rds")
+sampledata <- readRDS("sampledataGTDB232.rds")
 ```
 
-# Fig.1: EAM algae content
+# EAM algae content
 Used to create Fig 1 EAM composition graphs
 ```{r}
 library(rstatix)
 library(ggpubr)
 
-eam.content <- read.table("EAM_stomachcontent_SG.txt", sep = "\t", header = TRUE)
+eam.content <- read.table("EAM_stomachcontent_SG.txt", sep = "\t", header = TRUE) ## This says stomach content, but this is the EAM food source
 
 # Summary statistics table
 eam.content.summary <- eam.content %>%
@@ -125,119 +51,983 @@ eam.content.summary <- eam.content %>%
   get_summary_stats(Content, type = "full") %>%
   mutate(mean_p_se = mean + se, mean_m_se = mean - se)
 
-ggplot(eam.content.summary, aes(x = Site, y = mean)) +
-    geom_bar(stat = "identity", aes(fill = StomachContent), position = "stack") +
-    facet_grid(~Location, scales = "free_x") +
-    theme(aspect.ratio = 1, legend.position = "right") +
-    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-    guides(fill = guide_legend(ncol = 1)) +
-    ylab("Content (%)") +
-    xlab("Site") +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-
 ggplot(eam.content.summary, aes(x = StomachContent, y = mean)) +
-    geom_bar(stat = "identity", aes(fill = StomachContent)) +
+    geom_bar(stat = "identity", aes(fill = StomachContent),position = "stack") +
+   scale_fill_manual(values=c("forestgreen", "dodgerblue2", "chocolate4", "gold1")) +
     geom_errorbar(aes(ymin = mean_m_se, ymax = mean_p_se), width = 0.1, position = "identity") +
     facet_grid(~Location*Site, scales = "free_x") +
-    theme(aspect.ratio = 1, legend.position = "right") +
+theme(aspect.ratio = 1, legend.position = "right") +
     theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-    guides(fill = guide_legend(ncol = 1)) +
-    ylab("Content (%)") +
+    theme(axis.text.x = element_text(colour = "black", size = 11), axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11), legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+    guides(fill = guide_legend(ncol = 1)) + labs(fill = NULL) +   
+    ylab("EAM food source Content (%)") +
     xlab("Site") +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))  # USED = recreated in illustrator
 ```
 
-## Stats
-### Location
+## ADONIS 
+### EAM content 
+
+```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+library(vegan)
+
+eam.content <- read.table("EAM_permanova_algaecontent2.txt", sep = "\t", header = TRUE) %>%
+  mutate(sum = Algae + Detritus + Animalmatter + Other) %>%
+  filter(sum != 0.00) %>%
+  dplyr::select(-sum)
+
+# To set rownames
+rownames(eam.content) <- eam.content$SampleID
+eam.content$SampleID <- NULL
+eam.content <- as.matrix(eam.content)
+
+sampledf <- data.frame(sample_data(sampledata)) %>%
+  filter(SampleID %in% rownames(eam.content))
+rownames(sampledf) <- sampledf$SampleID
+sampledf$SampleID <- NULL
+
+# As our data are basically abundance-based data, we have to calculate Bray-Curtis distances
+dis <- vegdist(eam.content, method = "euclidean")
+
+adonis2(dis ~ Location/Site, data = sampledf, by = "terms")
+
+### SITE NESTED IN LOCATION PERMDISP:
+beta.site <- betadisper(dis, sampledf$Site)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Location)
+
+```
+
+Univariate analyses were run after this to test for differences in independent diet components individually)
+
+### lmer univariate tests
+```{r}
+library(lmerTest)
+
+eam.content <- read.table("EAM_stomachcontent_SG.txt", sep = "\t", header = TRUE) ## This says stomach content, but this is the EAM food source
+
+# Algae:
+eam.content.algae <- eam.content %>%
+  dplyr::filter(StomachContent == "Algae")
+
+eam.lme.algaecontent <- lmer(Content ~ Location + (1|Site),  data = eam.content.algae)
+anova(eam.lme.algaecontent) # p = 0.9192
+summary(eam.lme.algaecontent)
+
+eam.lme.algaecontent2 <- lm(Content ~ Location,  data = eam.content.algae)
+anova(eam.lme.algaecontent2) # 0.9538
+
+# Detritus:
+eam.content.detritus <- eam.content %>%
+  dplyr::filter(StomachContent == "Detritus")
+
+eam.lme.detcontent <- lmer(Content ~ Location + (1|Site),  data = eam.content.detritus)
+anova(eam.lme.detcontent) # p = 0.9389
+
+eam.lme.detcontent2 <- lm(Content ~ Location,  data = eam.content.detritus)
+anova(eam.lme.detcontent2) # p = 0.9347
+
+# Animal matter:
+eam.content.animal <- eam.content %>%
+  dplyr::filter(StomachContent == "Animalmatter")
+
+eam.lme.animalcontent <- lmer(Content ~ Location + (1|Site),  data = eam.content.animal)
+anova(eam.lme.animalcontent) # p = 0.4268
+
+eam.lme.animalcontent2 <- lm(Content ~ Location,  data = eam.content.animal)
+anova(eam.lme.animalcontent2) # p = 0.331
+
+# Other:
+eam.content.other <- eam.content %>%
+  dplyr::filter(StomachContent == "Other")
+
+eam.lme.othercontent <- lmer(Content ~ Location + (1|Site),  data = eam.content.other)
+anova(eam.lme.othercontent) # p = 0.2267
+
+eam.lme.othercontent2 <- lm(Content ~ Location,  data = eam.content.other)
+anova(eam.lme.othercontent2) # p = 0.06157
+```
+
+### 16S
+
+```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+trans.adonis <- microbiome::transform(ps.eam, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+
+unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
+sampledf <- data.frame(sample_data(trans.adonis))
+
+# ADONIS
+adonis2(formula = unifrac ~ Location * Location/Site, data = sampledf, strata = sampledf$Location, by = "terms")
+
+### SITE NESTED IN LOCATION PERMDISP:
+beta.site <- betadisper(unifrac, sampledf$Site)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Location)
+```
+
+## Fish Stomach Content (ingested EAM)
+
+```{r}
+library(rstatix)
+library(ggpubr)
+
+fish.content <- read.table("Fish_stomachcontent_SG.txt", sep = "\t", header = TRUE)
+
+# Summary statistics table
+fish.content.summary <- fish.content %>%
+  group_by(StomachContent, Species, Site) %>% 
+  get_summary_stats(Content, type = "full") %>%
+  mutate(mean_p_se = mean + se, mean_m_se = mean - se)
+
+theme_set(theme_bw())
+ggplot(fish.content.summary, aes(x = StomachContent, y = mean)) +
+    geom_bar(stat = "identity", aes(fill = StomachContent)) +
+    scale_fill_manual(values=c("forestgreen", "dodgerblue2", "chocolate4", "gold1")) +
+    geom_errorbar(aes(ymin = mean_m_se, ymax = mean_p_se), width = 0.1, position = "identity") +
+    facet_grid(~Species*Site, scales = "free_x") +
+    #scale_y_continuous(labels = scales::percent) +
+    theme(aspect.ratio = 1, legend.position = "right") +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    theme(axis.text.x = element_text(colour = "black", size = 11), axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11), legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+    guides(fill = guide_legend(ncol = 1)) +
+    ylab("Content (%)") +
+    xlab("Content Type") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) # USED = recreated in illustrator
+```
+
+## ADONIS 
+### Fish stomach content
+
+```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+library(vegan)
+
+# Then, load the downloaded data into R:
+fish.content <- read.table("Fish_permanova_stomachcontent2.txt", sep = "\t", header = TRUE) %>%
+  mutate(sum = Algae + Detritus + Animalmatter + Other) %>%
+  filter(sum != 0.00) %>%
+  dplyr::select(-sum)
+
+# To set rownames for this data frame we do:
+rownames(fish.content) <- fish.content$SampleID
+fish.content$SampleID <- NULL 
+fish.content <- as.matrix(fish.content)
+
+sampledf <- data.frame(sample_data(sampledata)) %>%
+  filter(SampleID %in% rownames(fish.content))
+rownames(sampledf) <- sampledf$SampleID
+sampledf$SampleID <- NULL
+
+dis <- vegdist(fish.content, method = "euclidean")
+
+adonis2(dis ~ Shifting/Species, data = sampledf, strata = sampledf$Shifting, by = "terms")
+
+### Species NESTED IN Shifting PERMDISP:
+beta.site <- betadisper(dis, sampledf$Species)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Shifting)
+```
+
+### Univariate stats
+####  ALGAE
+```{r}
+library(lme4)
+library(arm)
+library(lmerTest)  # for p-values
+
+fish.content.algae <- read.table("Fish_stomachcontents_algae.txt", sep = "\t", header = TRUE)
+
+# Check balanced or unbalanced design
+replications(Content ~ Species + Shifting, fish.content.algae)
+
+fish.lme.algae <- lmer(Content ~ Shifting + (1|Species),  data = fish.content.algae)
+anova(fish.lme.algae)
+summary(fish.lme.algae)
+
+fish.lme.algae2 <- lm(Content ~ Species,  data = fish.content.algae)
+anova(fish.lme.algae2) 
+```
+
+####  DETRITUS 
+```{r}
+
+fish.content.detritus <- read.table("Fish_stomachcontents_detritus.txt", sep = "\t", header = TRUE)
+
+# Check balanced or unbalanced design
+replications(Content ~ Species + Shifting, fish.content.detritus)
+
+fish.lme.detritus <- lmer(Content ~ Shifting + (1|Species),  data = fish.content.detritus)
+anova(fish.lme.detritus)
+summary(fish.lme.detritus)
+
+fish.lme.detritus2 <- lm(Content ~ Species,  data = fish.content.detritus)
+anova(fish.lme.detritus2)
+```
+
+# Fish stomach content per SPECIES (StomachContent in separate files)
+to get % algae for each species, summarised in table
 ```{r}
 # https://www.datanovia.com/en/lessons/anova-in-r/
 library(rstatix)
 library(ggpubr)
 
-eam.content <- read.table("EAM_stomachcontent_SG.txt", sep = "\t", header = TRUE)
+fish.content.algae <- read.table("Fish_stomachcontents_algae.txt", sep = "\t", header = TRUE)
 
-# Summary statistics table
-eam.content.summary <- eam.content %>%
-  group_by(Location, StomachContent) %>%
+fish.content.algae.summary <- fish.content.algae %>%
+  group_by(Species) %>%
   get_summary_stats(Content, type = "mean_se")
 
-ggboxplot(eam.content, x = "StomachContent", y = "Content", color = "StomachContent", palette = "jco", facet.by = "Location", nrow = 1)
-
-# Identify outliers
-eam.content %>% 
-  group_by(Location, StomachContent) %>%
-  identify_outliers(Content)
+ggboxplot(fish.content.algae, x = "Species", y = "Content")
 
 # Check normality
-# Build the linear model
-model  <- lm(Content ~ Location, data = eam.content)
+model  <- lm(Content ~ Species, data = fish.content.algae)
 ggqqplot(residuals(model))
+
+# Compute Shapiro-Wilk test of normality
 shapiro_test(residuals(model))
 
-#Check normality assumption by Location
-eam.content %>%
-  group_by(Location) %>%
-  shapiro_test(Content)
-ggqqplot(eam.content, "Content", facet.by = "Location")
+#Check normality assumption by Species
+fish.content.algae %>%
+  group_by(Species) %>%
+  shapiro_test(Content) 
+ggqqplot(fish.content.algae, "Content", facet.by = "Species")
 
-# residuals versus fits plot can be used to check the homogeneity of variances or Levene's test
-eam.content %>% levene_test(Content ~ Location)
+# check the homogeneity of variances or Levene's test
+fish.content.algae %>% levene_test(Content ~ Species)
 
-# Run one way non-parametric for Location
-res.kruskal <- eam.content %>% 
-  kruskal_test(Content ~ Location)
+# ANOVA
+res.aov <- fish.content.algae %>% anova_test(Content ~ Species)
+res.aov
 
-# Pairwise comparisons using Dunn's test:
-pwc <- eam.content %>% 
-  dunn_test(Content ~ Location, p.adjust.method = "bonferroni") 
+# Pairwise comparisons - tukeys
+pwc <- fish.content.algae %>% tukey_hsd(Content ~ Species)
 pwc
 
 # Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "StomachContent")
-ggboxplot(eam.content, x = "StomachContent", y = "Content", color = "Location") +
+pwc <- pwc %>% add_xy_position(x = "Species")
+ggboxplot(fish.content.algae, x = "Species", y = "Content", color = "Species") +
+  #facet_wrap(~Species, scales = "free_x", ncol = 2) +
   stat_pvalue_manual(pwc, hide.ns = TRUE) +
   labs(
-    subtitle = get_test_label(res.kruskal, detailed = TRUE),
+    subtitle = get_test_label(res.aov, detailed = TRUE),
     caption = get_pwc_label(pwc)
-    )
-
-pwc <- pwc %>% add_xy_position(x = "StomachContent")
-ggboxplot(eam.content, x = "StomachContent", y = "Content", color = "StomachContent") +
-  stat_pvalue_manual(pwc, hide.ns = TRUE) +
-  labs(
-    subtitle = get_test_label(res.kruskal, detailed = TRUE),
-    caption = get_pwc_label(pwc)
-    )
+    ) +
+  ylab("Content") + xlab ("Species")
 ```
 
-### Site
+## DETRITUS - to get % detritus for each species, summarised in table
 ```{r}
-# Summary statistics table
-eam.content.summary <- eam.content %>%
-  group_by(Site) %>%
+fish.content.detritus <- read.table("Fish_stomachcontents_detritus.txt", sep = "\t", header = TRUE)
+
+fish.content.detritus.summary <- fish.content.detritus %>%
+  group_by(Species) %>%
   get_summary_stats(Content, type = "mean_se")
-ggboxplot(eam.content, x = "StomachContent", y = "Content", color = "StomachContent", palette = "jco", facet.by = "Site", nrow = 1)
 
-# Run one way non-parametric for Site
-res.kruskal2 <- eam.content %>% 
-  kruskal_test(Content ~ Site)
+ggboxplot(fish.content.detritus, x = "Species", y = "Content")
 
-pwc2 <- eam.content %>% 
-  dunn_test(Content ~ Site, p.adjust.method = "bonferroni") 
-pwc2
+# Check normality
+model  <- lm(Content ~ Species, data = fish.content.detritus)
+ggqqplot(residuals(model))
+# Compute Shapiro-Wilk test of normality
+shapiro_test(residuals(model))
+
+#Check normality assumption by Species
+fish.content.detritus %>%
+  group_by(Species) %>%
+  shapiro_test(Content)
+ggqqplot(fish.content.detritus, "Content", facet.by = "Species")
+
+# check the homogeneity of variances or Levene's test
+fish.content.detritus %>% levene_test(Content ~ Species)
+
+# Kruskal
+res.kruskal <- fish.content.detritus %>% 
+  kruskal_test(Content ~ Species) 
+
+# Pairwise comparisons using Dunn's test:
+pwc <- fish.content.detritus %>% 
+  dunn_test(Content ~ Species, p.adjust.method = "bonferroni") 
+pwc
 
 # Visualization: box plots with p-values
-pwc2 <- pwc2 %>% add_xy_position(x = "Site")
-ggboxplot(eam.content, x = "StomachContent", y = "Content", color = "StomachContent") +
-  facet_wrap(~Site, ncol = 5) +
-  stat_pvalue_manual(pwc2, hide.ns = TRUE) +
-  labs(
-    subtitle = get_test_label(res.kruskal2, detailed = TRUE),
-    caption = get_pwc_label(pwc2)
-    )
+pwc <- pwc %>% add_xy_position(x = "Species")
+ggboxplot(fish.content.detritus, x = "Species", y = "Content", 
+          color = "Species") +
+          #facet_wrap(~Site, ncol = 5) +
+          stat_pvalue_manual(pwc, hide.ns = TRUE) +
+          labs(
+          subtitle = get_test_label(res.kruskal, detailed = TRUE),
+          caption = get_pwc_label(pwc))
 ```
 
-# Table S1: Fish Physical factors
+# PCoA
+### Fish, EAM, water samples
+
+```{r}
+transall <- microbiome::transform(ps, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+plotunifw <- ordinate(transall, method = "PCoA", distance = "unifrac", weighted = TRUE)
+p <- plot_ordination(transall, plotunifw, color = "Sample_Type", shape = "Sample_Type") +
+  geom_point(size = 4, aes(alpha = 0.6)) +
+  scale_shape_manual(values = c(15, 16, 18)) +
+  theme(aspect.ratio = 1)
+# Tidy up the colours 
+p$layers <- p$layers[-1]
+
+unif <- phyloseq::distance(ps, "wunifrac")
+unif.ord <- ordinate(ps, method = "PCoA", unif)
+
+p_jacc <- plot_ordination(ps, unif.ord, color = "Sample_Type", shape = "Sample_Type")
+Fig2a <- p_jacc + geom_point(size = 4)  + theme_bw() + theme_classic() + 
+  theme(text = element_text(size = 11)) + stat_ellipse(aes(group = Sample_Type), level = 0.8) +
+  theme(aspect.ratio = 1, legend.position = "right") +
+  theme(axis.text.x = element_text(colour = "black", size = 11), axis.text.y = element_text(colour = "black", size = 11)) +
+  theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11),
+  legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+  labs(color = "Sample_Type", shape = "Sample_Type")
+```
+
+### Fish
+
+```{r}
+# Using ps.fish from above
+theme_set(theme_bw())
+trans <- microbiome::transform(ps.fish, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+plotunifw <- ordinate(trans, method = "PCoA", distance = "unifrac", weighted = TRUE)
+p <- plot_ordination(trans, plotunifw, shape = "Shifting", color = "Species") +
+  geom_point(size = 4, alpha = 0.5) +
+  scale_shape_manual(values = c(15, 16)) +
+  theme(aspect.ratio = 1)
+
+p$layers <- p$layers[-1]
+
+# Per shifting
+p_jacc <- plot_ordination(ps.fish, unif.ord, color = "Species", shape = "Shifting")
+Fig2b <- p_jacc +
+  geom_point(size = 4) +
+  stat_ellipse(aes(group = Shifting), level = 0.80) +
+  scale_shape_manual(values = c(17, 19), name = "Shifting") +
+  theme_classic() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    text = element_text(size = 11),
+    axis.text.x = element_text(colour = "black", size = 11),
+    axis.text.y = element_text(colour = "black", size = 11),
+    axis.title.x = element_text(colour = "black", size = 11),
+    axis.title.y = element_text(colour = "black", size = 11),
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 11))
+```
+### EAM
+
+```{r}
+trans <- microbiome::transform(ps.eam, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+plotunifw <- ordinate(trans, method = "PCoA", distance = "unifrac", weighted = TRUE)
+p <- plot_ordination(trans, plotunifw, shape = "Location", color = "Site") +
+  geom_point(size = 4, aes(alpha = 0.6)) +
+  scale_shape_manual(values = c(15, 16)) +
+  theme(aspect.ratio = 1)
+
+p$layers <- p$layers[-1]
+
+# adding hull
+unif <- phyloseq::distance(ps.eam, "wunifrac")
+unif.ord <- ordinate(ps.eam, method = "PCoA", distance = unif)
+
+p_jacc <- plot_ordination(ps.eam, unif.ord, shape = "Location", color = "Site")
+
+Fig2c <- p_jacc +
+  geom_point(size = 4) +
+  stat_ellipse(aes(group = Site, color = Site), level = 0.8) +
+  theme_classic() +
+  theme(text = element_text(size = 11),
+        legend.position = "right") +
+  labs(color = "Site", shape = "Location")
+
+var_exp <- unif.ord$values$Relative_eig
+
+x_lab <- paste0("PCoA1 (", round(var_exp[1] * 100, 1), "%)")
+y_lab <- paste0("PCoA2 (", round(var_exp[2] * 100, 1), "%)")
+
+Fig2c <- Fig2c +labs(x = x_lab, y = y_lab)
+
+Fig2 <- ggarrange(Fig2a, Fig2b, Fig2c,
+                     labels = c("a)", "b)", "c)"),
+                     font.label = list(size = 11, colour = "black", face = "plain"),
+                     ncol = 2, nrow = 2,
+                     common.legend = FALSE, legend = NULL)
+```
+
+# PCoA with vectors
+```{r}
+ps.fish_sub <- subset_samples(ps.fish, !is.na(Algae))
+unif <- phyloseq::distance(ps.fish_sub, "wunifrac")
+df_contents <- sampledf %>%
+  filter(sample_name %in% sample_names(ps.fish_sub)) %>%
+  select(sample_name, Algae, Detritus, Animalmatter, Other) #%>%
+
+pcoa_res <- wcmdscale(unif)
+env_res <- envfit(pcoa_res, df_contents, permutations = 999) 
+vectors <- as.data.frame(scores(env_res,  display = "vectors")) %>% tibble::rownames_to_column(var = "label")
+
+plot_df <- vegan::scores(pcoa_res, display = "sites") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "sample_name") %>%
+  left_join(., sampledf)
+
+pcoa <- ape::pcoa(unif)
+eig <- pcoa$values$Relative_eig
+var_exp <- eig / sum(eig[eig > 0])
+
+x_lab <- paste0("PCoA1 (", round(var_exp[1] * 100, 1), "%)")
+y_lab <- paste0("PCoA2 (", round(var_exp[2] * 100, 1), "%)")
+
+ggplot(plot_df, aes(Dim1, Dim2)) + geom_point(aes(shape = Shifting, color = Species, size = 2))  + theme_bw() + theme_classic() + 
+  theme(text = element_text(size = 11)) + stat_ellipse(aes(color = Species, group = Species), level = 0.80) +
+  labs(color = "Species",  x = x_lab,  y = y_lab) + scale_shape_manual(values = c(17, 19), name = "Species") +
+  geom_segment(data = vectors, aes(x = 0, xend = Dim1/5, y = 0, yend = Dim2/5), arrow = arrow(length = unit(0.2, "cm"))) +
+      theme(axis.text.x = element_text(colour = "black", size = 11), axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11), legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+  geom_text(data = vectors, aes(x= Dim1/5, y = Dim2/5, label = label), size = 4)
+
+ggplot(plot_df, aes(Dim1, Dim2)) + geom_point(aes(shape = Shifting, color = Shifting, size = 2))  + theme_bw() + theme_classic() + 
+  scale_color_manual(values=c("darkblue", "red")) +
+  theme(text = element_text(size = 11)) + stat_ellipse(aes(color = Shifting, group = Shifting), level = 0.80) +
+  labs(color = "Shifting",  x = x_lab,  y = y_lab) + scale_shape_manual(values = c(17, 19), name = "Shifting") +
+  geom_segment(data = vectors, aes(x = 0, xend = Dim1/5, y = 0, yend = Dim2/5), arrow = arrow(length = unit(0.2, "cm"))) +
+        theme(axis.text.x = element_text(colour = "black", size = 11), axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11), legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+  geom_text(data = vectors, aes(x = Dim1/5, y = Dim2/5, label = label), size = 4)
+```
+
+
+#Nitrogen EAM
+```{r}
+eam.n2 <- read.table("EAM_cnratio_mapping.txt", sep = "\t", header = TRUE)
+
+levels(eam.n2$Site)
+eam.n2 <- eam.n2 %>%
+  reorder_levels(Site, order = c("Lagoon_entrance_west", "Lagoon_entrance_east", "Keyhole", "Outer_Algae_Flats", "South_Algae_Flats"))
+levels(eam.n2$Site)
+
+eam.n2.summary <- eam.n2 %>%
+  group_by(Site, Location) %>%
+  get_summary_stats(Nitrogen, type = "mean_se")
+
+ggplot(eam.n2.summary, aes(x = Site, y = mean)) +
+    geom_bar(stat = "identity", aes(fill = Location), position =) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.1, position = "identity") +
+    theme(aspect.ratio = 1, legend.position = "right") +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    guides(fill = guide_legend(ncol = 1)) +
+    scale_fill_manual(values = c("darkorange2", "dodgerblue4")) +
+    ylab("Nitrogen") +
+    xlab("Site") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+#C:N Ratio EAM
+
+```{r}
+eam.cn <- read.table("EAM_cnratio_mapping.txt", sep = "\t", header = TRUE)
+
+levels(eam.cn$Site)
+eam.cn <- eam.cn %>%
+  reorder_levels(Site, order = c("Lagoon_entrance_west", "Lagoon_entrance_east", "Keyhole", "Outer_Algae_Flats", "South_Algae_Flats"))
+levels(eam.cn$Site)
+
+eam.cn.summary <- eam.cn %>%
+  group_by(Site, Location) %>%
+  get_summary_stats(CNRatio, type = "mean_se")
+
+ggplot(eam.cn.summary, aes(x = Site, y = mean)) +
+    geom_bar(stat = "identity", aes(fill = Location)) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.1, position = "identity") +
+    theme(aspect.ratio = 1, legend.position = "right") +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    guides(fill = guide_legend(ncol = 1)) +
+    scale_fill_manual(values = c("darkorange2", "dodgerblue4")) +
+    ylab("C:N Ratio") +
+    xlab("Site") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+## ADONIS (PERMANOVA) 
+### Nitrogen
+
+```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+library(vegan)
+
+eam.n2 <- read.table("EAM_permanova_nitrogen.txt", sep = "\t", header = TRUE)
+
+# To set rownames for this data frame we do:
+rownames(eam.n2) <- eam.n2$SampleID
+eam.n2$SampleID <- NULL
+eam.n2 <- as.matrix(eam.n2)
+
+sampledf <- data.frame(sample_data(sampledata)) %>%
+  filter(SampleID %in% rownames(eam.n2))
+rownames(sampledf) <- sampledf$SampleID
+sampledf$SampleID <- NULL
+
+dis <- vegdist(eam.n2, method = "euclidean")
+
+adonis2(dis ~ Location/Site, data = sampledf, by = "terms")
+
+adonis2(dis ~ Location/Site, data = sampledf, strata = sampledf$Location)
+
+# PERMDISP (betadisper)
+### SITE NESTED IN LOCATION PERMDISP:
+beta.site <- betadisper(dis, sampledf$Site)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Location)
+```
+
+### CN Ratio
+
+```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+library(vegan)
+
+# Then, load the downloaded data into R:
+eam.cn <- read.table("EAM_permanova_cnratio.txt", sep = "\t", header = TRUE)
+
+rownames(eam.cn) <- eam.cn$SampleID
+eam.cn$SampleID <- NULL
+eam.cn <- as.matrix(eam.cn)
+
+sampledf <- data.frame(sample_data(sampledata)) %>%
+  filter(SampleID %in% rownames(eam.cn))
+rownames(sampledf) <- sampledf$SampleID
+sampledf$SampleID <- NULL
+
+dis <- vegdist(eam.cn, method = "euclidean")
+
+adonis2(dis ~ Location/Site, data = sampledf, by = "terms")
+
+adonis2(dis ~ Location/Site, data = sampledf, strata = sampledf$Location)
+
+# PERMDISP (betadisper)
+### SITE NESTED IN LOCATION PERMDISP:
+beta.site <- betadisper(dis, sampledf$Site)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Location)
+```
+
+## PCoA: Fish, EAM, Water
+
+```{r}
+transall <- microbiome::transform(ps, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+plotunifw <- ordinate(transall, method = "PCoA", distance = "unifrac", weighted = TRUE)
+p <- plot_ordination(transall, plotunifw, color = "Sample_Type", shape = "Sample_Type") +
+  geom_point(size = 4, aes(alpha = 0.6)) +
+  scale_shape_manual(values = c(15, 16, 18)) +
+  theme(aspect.ratio = 1)
+
+p$layers <- p$layers[-1]
+
+unif <- phyloseq::distance(ps, "wunifrac")
+unif.ord <- ordinate(ps, method = "PCoA", unif)
+
+p_jacc <- plot_ordination(ps, unif.ord, color = "Sample_Type", shape = "Sample_Type")
+p_jacc + geom_point(size = 6)  + theme_bw() + theme_classic() + 
+  theme(text = element_text(size = 11)) + stat_ellipse(aes(group = Sample_Type), level = 0.8) +
+  labs("Sample_Type")
+```
+
+```{r}
+bray <- phyloseq::distance(transfish, method = "bray")
+sampledf <- data.frame(sample_data(transfish))
+
+ps.fish_sub <- subset_samples(ps.fish, !is.na(Algae))
+unif <- phyloseq::distance(ps.fish_sub, "wunifrac")
+df_contents <- sampledf %>%
+  filter(SampleID %in% sample_names(ps.fish_sub)) %>%
+  select(SampleID,Algae, Detritus, Animalmatter, Other) %>%
+  tibble::column_to_rownames(var = "SampleID")
+
+pcoa_res <- wcmdscale(unif)
+env_res <- envfit(pcoa_res, df_contents, permutations = 999)
+vectors <- as.data.frame(scores(env_res,  display = "vectors")) %>% tibble::rownames_to_column(var = "label")
+
+plot_df <- vegan::scores(pcoa_res, display = "sites") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "SampleID") %>%
+  left_join(., sampledf)
+
+ggplot(plot_df, aes(Dim1, Dim2)) + geom_point(aes(shape = Shifting, color = Species, size = 6))  + theme_bw() + theme_classic() + 
+  theme(text = element_text(size = 11)) + stat_ellipse(aes(color = Species, group = Species), level = 0.80) +
+  labs("Species") + scale_shape_manual(values = c(17, 19), name = "Species") +
+  geom_segment(data = vectors, aes(x = 0, xend = Dim1/5, y = 0, yend = Dim2/5), arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_text(data = vectors, aes(x= Dim1/5, y = Dim2/5, label = label), size = 4)
+
+ggplot(plot_df, aes(Dim1, Dim2)) + geom_point(aes(shape = Shifting, color = Shifting, size = 6))  + theme_bw() + theme_classic() + 
+  theme(text = element_text(size = 11)) + stat_ellipse(aes(color = Shifting, group = Shifting), level = 0.60) +
+  labs("Shifting") + scale_shape_manual(values = c(17, 19), name = "Shifting") +
+  geom_segment(data = vectors, aes(x = 0, xend = Dim1/5, y = 0, yend = Dim2/5), arrow = arrow(length = unit(0.2, "cm"))) +
+  geom_text(data = vectors, aes(x = Dim1/5, y = Dim2/5, label = label), size = 4)
+```
+
+# Alpha diversity Fish
+```{r}
+
+smallest <- min(sample_sums(ps.fish))
+r <- rarefy_even_depth(ps.fish, sample.size = smallest, verbose = FALSE, replace = TRUE)
+ps.pruned <- prune_taxa(taxa_sums(r) > 0, r)
+
+theme_set(theme_bw())
+alphafish <- plot_richness(ps.pruned, x = "Species", measures = c("Chao1", "Shannon")) +
+  geom_boxplot(outlier.size = 0.1) +
+  theme(aspect.ratio = 1.5, 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(text = element_text(size = 11)) +
+    theme(axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11),
+    legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  ylab("Alpha diversity")
+```
+
+### Summary table
+```{r}
+library(car)
+library(rstatix)
+
+# Stats for Chao1
+results.chao = estimate_richness(ps.pruned, measures = 'Chao1')
+
+results.chao <- results.chao %>%
+  tibble::rownames_to_column(var = "sample_name")
+
+meta <- data.frame(sample_name = sample_data(ps.pruned)$sample_name, 
+                   Species = sample_data(ps.pruned)$Species,
+                   Shifting = sample_data(ps.pruned)$Shifting)
+meta$sample_name <- str_replace(meta$sample_name, "-", ".")
+results.chao <- left_join(results.chao, meta)
+
+Chao.summary <- results.chao %>%
+                    group_by(Shifting) %>% 
+                    get_summary_stats(Chao1, type = "common")
+
+# Stats for Shannon
+results.shan = estimate_richness(ps.pruned, measures = 'Shannon')
+
+results.shan <- results.shan %>%
+  tibble::rownames_to_column(var = "sample_name")
+
+meta <- data.frame(sample_name = sample_data(ps.pruned)$sample_name,
+                   Species = sample_data(ps.pruned)$Species,
+                   Shifting = sample_data(ps.pruned)$Shifting)
+meta$sample_name <- str_replace(meta$sample_name, "-", ".")
+results.shan <- left_join(results.shan, meta)
+
+Shan.summary <- results.shan %>%
+                    group_by(Shifting) %>% 
+                    get_summary_stats(Shannon, type = "common")
+
+# Summary table
+summary.table <- rbind(Chao.summary, Shan.summary)
+```
+
+### Stats 
+```{r}
+library(lme4)
+library(arm)
+library(lmerTest)
+
+alpha.fish <- read.table("mappingFISHalpha.txt", sep = "\t", header = TRUE)
+
+alpha.fish <- alpha.fish %>%
+  dplyr::filter(GutSection == "HG")
+alpha.fish <- droplevels(alpha.fish)
+
+# Shannon diversity
+alpha.fish.shan <- alpha.fish %>%
+  dplyr::select(Shannon, Shifting, Species) %>%
+  droplevels()
+
+fish.lme.shan <- lmer(Shannon ~ Shifting + (1|Species),  data = alpha.fish.shan)
+anova(fish.lme.shan)
+summary(fish.lme.shan) 
+
+fish.lme.shan2 <- lm(Shannon ~ Species,  data = alpha.fish.shan)
+anova(fish.lme.shan2)
+
+library(emmeans)
+emmeans(fish.lme.shan, pairwise ~ Shifting)
+
+# Chao1 richness
+alpha.fish.chao <- alpha.fish %>%
+  dplyr::select(Chao1, Shifting, Species) %>%
+  droplevels()
+
+fish.lme.chao <- lmer(Chao1 ~ Shifting + (1|Species), data = alpha.fish.chao)
+anova(fish.lme.chao)
+summary(fish.lme.chao) #p = 0.201
+
+fish.lme.chao2 <- lm(Chao1 ~ Species, data = alpha.fish.chao)
+anova(fish.lme.chao2)
+```
+
+# Alpha diversity EAM
+
+```{r}
+# library(ggplot2)
+smallest <- min(sample_sums(ps.eam))
+r <- rarefy_even_depth(ps.eam, sample.size = smallest, verbose = FALSE, replace = TRUE)
+
+ps.pruned <- prune_taxa(taxa_sums(r) > 0, r)
+
+theme_set(theme_bw())
+plot_richness(ps.pruned, x = "Location", measures = c("Chao1", "Shannon")) +
+  geom_boxplot(outlier.size = 0.1) +
+  theme(aspect.ratio = 1.5, 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(text = element_text(size = 11)) +
+    theme(axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11),
+    legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  ylab("Alpha diversity")
+```
+
+### Stats
+```{r}
+library(lme4)
+library(lmerTest)
+
+alpha.eam <- read.table("mappingEAMalpha_SG.txt", sep = "\t", header = TRUE)
+summary(alpha.eam)
+head(alpha.eam)
+
+# Shannon diversity
+alpha.eam.shan <- alpha.eam %>%
+  dplyr::select(Shannon, Location, Site) %>%
+  droplevels()
+
+eam.lme.shan <- lmer(Shannon ~ Location + (1|Site), data = alpha.eam.shan) 
+anova(eam.lme.shan) #
+summary(eam.lme.shan) 
+
+eam.lme.shan2 <- lm(Shannon ~ Location, data = alpha.eam.shan)
+anova(eam.lme.shan2) 
+
+# Chao1 richness
+alpha.eam.chao <- alpha.eam %>%
+  dplyr::select(Chao1, Location, Site) %>%
+  droplevels()
+
+eam.lme.chao <- lmer(Chao1 ~ Location + (1|Site),  data = alpha.eam.chao)
+anova(eam.lme.chao)
+summary(eam.lme.chao)
+
+eam.lme.chao2 <- lm(Chao1 ~ Location,  data = alpha.eam.chao)
+anova(eam.lme.chao2)
+```
+
+# Relative abundance
+## FISH
+
+```{r}
+glom <- tax_glom(ps.fish, taxrank = "Phylum")
+
+trans <- transform_sample_counts(glom, function(x) x/sum(x)*100)
+trans_fish <- filter_taxa(trans, function(x) mean(x) > 0.01, TRUE)
+
+long_fish <- psmelt(trans_fish) %>%
+  group_by(OTU, Sample, sample_Species, Shifting, Phylum) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+library(RColorBrewer)
+
+phyla_eam  <- unique(psmelt(trans_eam)$Phylum)
+phyla_fish <- unique(psmelt(trans_fish)$Phylum)
+
+all_phyla <- sort(unique(c(phyla_eam, phyla_fish)))
+
+n <- length(all_phyla)
+
+pal <- colorRampPalette(brewer.pal(12, "Paired"))(n)
+names(pal) <- all_phyla
+
+long_fish$Phylum <- factor(long_fish$Phylum, levels = all_phyla)
+theme_set(theme_bw())
+ggplot(long_fish, aes(x = Sample, y = Relative_abun)) +
+    geom_bar(stat = "identity", aes(fill = Phylum), colour = "black", position = "fill") +
+    facet_wrap(~sample_Species*Shifting, scales = "free_x", ncol = 5) +
+    scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(
+  values = pal,
+  breaks = all_phyla,   # ensures same legend order
+  drop = TRUE          # keeps missing phyla in legend
+) +   theme(aspect.ratio = 1, legend.position = "bottom", axis.text.x = element_blank()) +
+    theme(text = element_text(size = 11)) +
+    theme(axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11),
+    legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+    guides(fill = guide_legend(ncol = 4)) +
+    ylab("Relative Abundance (%)") + xlab("Replicate")
+```
+
+## EAM
+
+```{r}
+glom <- tax_glom(ps.eam, taxrank = "Phylum")
+
+trans <- transform_sample_counts(glom, function(x) x/sum(x)*100)
+trans_eam <- filter_taxa(trans, function(x) mean(x) > 0.01, TRUE)
+
+long_eam <- psmelt(trans_eam) %>%
+  group_by(OTU, Sample, Site, Location, Phylum) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+library(RColorBrewer)
+n <- length(unique(long_eam$Phylum))
+pal <- colorRampPalette(brewer.pal(12, "Paired"))(n)
+
+long_eam$Phylum  <- factor(long_eam$Phylum,  levels = all_phyla)
+theme_set(theme_bw())
+FigS3b <- ggplot(long_eam, aes(x = Sample, y = Relative_abun)) +
+    geom_bar(stat = "identity", aes(fill = Phylum), colour = "black", position = "fill") +
+    facet_wrap(~Location*Site, scales = "free_x", ncol = 5) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_fill_manual(values = pal,  breaks = all_phyla,  drop = TRUE) +
+    theme(aspect.ratio = 1, legend.position = "bottom", axis.text.x = element_blank()) +
+    theme(text = element_text(size = 11)) +
+    theme(axis.text.y = element_text(colour = "black", size = 11)) +
+    theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11),
+    legend.title = element_text(size = 11), legend.text = element_text(size = 11)) +
+    guides(fill = guide_legend(ncol = 4)) +
+    ylab("Relative Abundance (%)") + xlab("Replicate")
+
+```
+
+# Relative abundance table
+### Fish, EAM, water
+
+```{r}
+# FISH
+ps.genus <- tax_glom(ps.fish, taxrank = "Phylum")
+ps.genus <- transform_sample_counts(ps.genus, function(x) x/sum(x)*100)
+ps.genus <- filter_taxa(ps.genus, function(x) mean(x) > 0.01, TRUE)
+
+fishrelabundance <- psmelt(ps.genus) %>%
+ group_by(OTU, Phylum) %>%
+  summarise(Average_rel = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+# EAM
+ps.genus.eam <- tax_glom(ps.eam, taxrank = "Phylum")
+ps.genus.eam <- transform_sample_counts(ps.genus.eam, function(x) x/sum(x)*100)
+ps.genus.eam <- filter_taxa(ps.genus.eam, function(x) mean(x) > 0.01, TRUE)
+
+eamrelabundance <- psmelt(ps.genus.eam) %>%
+ group_by(OTU, Phylum) %>%
+  summarise(Average_rel = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+# WATER
+ps.genus <- tax_glom(ps.water, taxrank = "Phylum")
+ps.genus <- transform_sample_counts(ps.genus, function(x) x / sum(x)*100)
+ps.genus <- filter_taxa(ps.genus, function(x) mean(x) > 0.01, TRUE)
+
+relabundance <- psmelt(ps.genus) %>%
+ group_by(OTU, Phylum) %>%
+  summarise(Average_rel = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+```
+
+### Fish species
+
+```{r}
+glom <- tax_glom(ps.fish, taxrank = "Order")
+
+#A.dussumieri
+A.dussumieri <- subset_samples(glom, Species == "A.dussumieri")
+A.dussumieri <- transform_sample_counts(A.dussumieri, function(x) x/sum(x)*100)
+A.dussumieri <- filter_taxa(A.dussumieri, function(x) mean(x) > 1, TRUE)
+
+A.dussumieri <- psmelt(A.dussumieri) %>%
+  group_by(sample_Species, Shifting, OTU, Phylum, Class, Order) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+#A.nigricans 
+A.nigricans <- subset_samples(glom, Species == "A.nigricans")
+A.nigricans <- transform_sample_counts(A.nigricans, function(x) x/sum(x)*100)
+A.nigricans <- filter_taxa(A.nigricans, function(x) mean(x) > 1, TRUE)
+
+A.nigricans <- psmelt(A.nigricans) %>%
+  group_by(sample_Species, Shifting, OTU, Phylum, Class, Order) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+#A.nigricauda 
+A.nigricauda <- subset_samples(glom, Species == "A.nigricauda")
+A.nigricauda <- transform_sample_counts(A.nigricauda, function(x) x/sum(x)*100)
+A.nigricauda <- filter_taxa(A.nigricauda, function(x) mean(x) > 1, TRUE)
+
+A.nigricauda <- psmelt(A.nigricauda) %>%
+  group_by(sample_Species, Shifting, OTU, Phylum, Class, Order) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+#A.olivaceus
+A.olivaceus <- subset_samples(glom, Species == "A.olivaceus")
+A.olivaceus <- transform_sample_counts(A.olivaceus, function(x) x/sum(x)*100)
+A.olivaceus <- filter_taxa(A.olivaceus, function(x) mean(x) > 1, TRUE)
+
+A.olivaceus <- psmelt(A.olivaceus) %>%
+  group_by(sample_Species, Shifting, OTU, Phylum, Class, Order) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+#A.triostegus 
+A.triostegus <- subset_samples(glom, Species == "A.triostegus")
+A.triostegus <- transform_sample_counts(A.triostegus, function(x) x/sum(x)*100)
+A.triostegus <- filter_taxa(A.triostegus, function(x) mean(x) > 1, TRUE) 
+
+A.triostegus <- psmelt(A.triostegus) %>%
+  group_by(sample_Species, Shifting, OTU, Phylum, Class, Order) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+#A.blochii
+A.blochii <- subset_samples(glom, Species == "A.blochii")
+A.blochii <- transform_sample_counts(A.blochii, function(x) x/sum(x)*100)
+A.blochii <- filter_taxa(A.blochii, function(x) mean(x) > 1, TRUE)
+
+A.blochii <- psmelt(A.blochii) %>%
+  group_by(sample_Species, Shifting, OTU, Phylum, Class, Order) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+#A.grammoptilus
+A.grammoptilus <- subset_samples(glom, Species == "A.grammoptilus")
+A.grammoptilus <- transform_sample_counts(A.grammoptilus, function(x) x/sum(x)*100)
+A.grammoptilus <- filter_taxa(A.grammoptilus, function(x) mean(x) > 1, TRUE)
+
+A.grammoptilus <- psmelt(A.grammoptilus) %>%
+  group_by(sample_Species, Shifting, OTU, Phylum, Class, Order) %>%
+  summarise(Relative_abun = sum(Abundance/n()),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+relabun_fishspecies_order <- rbind(A.dussumieri, A.nigricans, A.nigricauda, A.olivaceus, A.triostegus, A.blochii, A.grammoptilus)
+
+# plot
+ggplot(relabun_fishspecies_order, aes(x = sample_Species, y = Relative_abun)) +
+    geom_bar(stat = "identity", aes(fill = Phylum), colour = "black", position = "stack") + 
+    theme(aspect.ratio = 1, legend.position = "right", axis.text.x = element_blank()) +
+    guides(fill = guide_legend(ncol = 2)) +
+    ylab("Relative Abundance (%)") + xlab("Replicate")
+```
+
+
+# Fish Physical factors
 ## Length
 ```{r}
 # Tutorial here: https://www.datanovia.com/en/lessons/anova-in-r/
@@ -258,7 +1048,7 @@ ggboxplot(fish.length, x = "Species", y = "Total_length", color = "Species", pal
 model  <- lm(Total_length ~ Species, data = fish.length)
 
 # Shapiro-Wilk test of normality
-shapiro_test(residuals(model)).
+shapiro_test(residuals(model))
 
 # homogeneity of variances or Levene's test
 fish.length %>% levene_test(Total_length ~ Species)
@@ -313,642 +1103,17 @@ ggboxplot(fish.weight, x = "Species", y = "Weight", color = "Species") +
           caption = get_pwc_label(tukey))
 ```
 
-# Fig. 2: PCoA's
-## Fish
-
-Unifrac, weighted - all data
-```{r}
-trans <- microbiome::transform(ps.fish, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
-plotunifw <- ordinate(trans, method = "PCoA", distance = "unifrac", weighted = TRUE)
-p <- plot_ordination(trans, plotunifw, shape = "GutSection", color = "Species") +
-  geom_point(size = 4, alpha = 0.5) +
-  scale_shape_manual(values = c(15, 16)) +
-  theme(aspect.ratio = 1)
-
-# Remove the extra symbol layer
-p$layers <- p$layers[-1]
-p
-
-# Adding hull
-unif <- phyloseq::distance(ps.fish, "wunifrac")
-unif.ord <- ordinate(ps.fish, method = "PCoA", unif)
-
-p_jacc <- plot_ordination(ps.fish, unif.ord, color = "Species", shape = "Shifting")
-p_jacc + geom_point(size = 6)  + theme_bw() + theme_classic() + 
-  theme(text = element_text(size = 11)) + stat_ellipse(aes(group = Species), level = 0.80) +
-  labs("Species") + scale_shape_manual(values = c(17, 19), name = "Shifting")
-```
-
-#### Mantel Test
-A statistical test of the correlation between two matrices
-https://stats.idre.ucla.edu/r/faq/how-can-i-perform-a-mantel-test-in-r/
-
-Mantel test measures the correlation between two matrices typically containing measures of distance.  A Mantel test is one way of testing for spatial autocorrelation. 
-```{r}
-library(ade4)
-
-ps.fish_sub <- subset_samples(ps.fish, !is.na(Algae))
-
-unif <- phyloseq::distance(ps.fish_sub, "wunifrac")
-
-df_contents <- sampledf %>%
-  filter(SampleID %in% sample_names(ps.fish_sub)) %>%
-  select(SampleID,Algae, Detritus, Animalmatter, Other) %>%
-  tibble::column_to_rownames(var = "SampleID")
-
-df_contents.dists <-  dist(df_contents)
-
-test <- mantel.rtest(unif, df_contents.dists, nrepet = 999)
-test
-```
-
-## EAM
-
-```{r}
-trans <- microbiome::transform(ps.eam, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
-plotunifw <- ordinate(trans, method = "PCoA", distance = "unifrac", weighted = TRUE)
-p <- plot_ordination(trans, plotunifw, shape = "Location", color = "Site") +
-  geom_point(size = 4, aes(alpha = 0.6)) +
-  scale_shape_manual(values = c(15, 16)) +
-  theme(aspect.ratio = 1)
-
-# Remove the extra point layer
-p$layers <- p$layers[-1]
-
-# adding hull
-unif <- phyloseq::distance(ps.eam, "wunifrac")
-unif.ord <- ordinate(ps.eam, method = "PCoA", unif)
-
-p_jacc <- plot_ordination(ps.eam, unif.ord, shape = "Location", color = "Site")
-p_jacc + geom_point(size = 6)  + theme_bw() + theme_classic() + 
-  theme(text = element_text(size = 11)) + stat_ellipse(aes(group = Site), level = 0.8) +
-  labs("Site") + scale_shape_manual(values = c(17, 19), name = "Habitat")
-```
-
-## Fish, EAM, Water
-
-```{r}
-transall <- microbiome::transform(ps, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
-plotunifw <- ordinate(transall, method = "PCoA", distance = "unifrac", weighted = TRUE)
-p <- plot_ordination(transall, plotunifw, color = "Sample_Type", shape = "Sample_Type") +
-  geom_point(size = 4, aes(alpha = 0.6)) +
-  scale_shape_manual(values = c(15, 16, 18)) +
-  theme(aspect.ratio = 1)
-
-# Tidy up the colours 
-p$layers <- p$layers[-1]
-
-unif <- phyloseq::distance(ps, "wunifrac")
-unif.ord <- ordinate(ps, method = "PCoA", unif)
-
-p_jacc <- plot_ordination(ps, unif.ord, color = "Sample_Type", shape = "Sample_Type")
-p_jacc + geom_point(size = 6)  + theme_bw() + theme_classic() + 
-  theme(text = element_text(size = 11)) + stat_ellipse(aes(group = Sample_Type), level = 0.8) +
-  labs("Sample_Type")
-```
-
-### Figure S7: PCoA with vector overlay
-
-```{r}
-bray <- phyloseq::distance(transfish, method = "bray")
-sampledf <- data.frame(sample_data(transfish))
-
-ps.fish_sub <- subset_samples(ps.fish, !is.na(Algae))
-unif <- phyloseq::distance(ps.fish_sub, "wunifrac")
-df_contents <- sampledf %>%
-  filter(SampleID %in% sample_names(ps.fish_sub)) %>%
-  select(SampleID,Algae, Detritus, Animalmatter, Other) %>%
-  tibble::column_to_rownames(var = "SampleID")
-
-pcoa_res <- wcmdscale(unif)
-env_res <- envfit(pcoa_res, df_contents, permutations = 999)
-vectors <- as.data.frame(scores(env_res,  display = "vectors")) %>% tibble::rownames_to_column(var = "label")
-
-plot_df <- vegan::scores(pcoa_res, display = "sites") %>%
-  as.data.frame() %>%
-  tibble::rownames_to_column(var = "SampleID") %>%
-  left_join(., sampledf)
-
-# Figure S7a
-ggplot(plot_df, aes(Dim1, Dim2)) + geom_point(aes(shape = Shifting, color = Species, size = 6))  + theme_bw() + theme_classic() + 
-  theme(text = element_text(size = 11)) + stat_ellipse(aes(color = Species, group = Species), level = 0.80) +
-  labs("Species") + scale_shape_manual(values = c(17, 19), name = "Species") +
-  geom_segment(data = vectors, aes(x = 0, xend = Dim1/5, y = 0, yend = Dim2/5), arrow = arrow(length = unit(0.2, "cm"))) +
-  geom_text(data = vectors, aes(x= Dim1/5, y = Dim2/5, label = label), size = 4)
-
-# Figure S7b
-ggplot(plot_df, aes(Dim1, Dim2)) + geom_point(aes(shape = Shifting, color = Shifting, size = 6))  + theme_bw() + theme_classic() + 
-  theme(text = element_text(size = 11)) + stat_ellipse(aes(color = Shifting, group = Shifting), level = 0.60) +
-  labs("Shifting") + scale_shape_manual(values = c(17, 19), name = "Shifting") +
-  geom_segment(data = vectors, aes(x = 0, xend = Dim1/5, y = 0, yend = Dim2/5), arrow = arrow(length = unit(0.2, "cm"))) +
-  geom_text(data = vectors, aes(x = Dim1/5, y = Dim2/5, label = label), size = 4)
-```
-
-# Fig. S1: Rarefy data - ALL SAMPLES
-
-```{r}
-# PCoA on bray curtis of non-rarified
-ps.trans <- microbiome::transform(ps, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
-ps.bray <- ordinate(ps, method = "PCoA", distance = "unifrac", weighted = TRUE)
-
-# PCoA on bray curtis of non-rarified
-plot_ordination(ps.trans, ps.bray, shape = "Species", color = "Species") + 
-  geom_point(size = 3, aes(alpha = 0.6)) +
-  scale_shape_manual(values = c(15, 16, 17, 18, 19, 20, 21, 22, 23, 24)) +
-  theme(aspect.ratio = 1)
-
-smallest <- min(sample_sums(ps)) # get minimum seq depth across all samples
-r <- rarefy_even_depth(ps, sample.size = smallest, verbose = FALSE, replace = TRUE)
-
-r <- prune_taxa(taxa_sums(r) > 0, r) # prune OTUs that are not present in any of the samples, using rarefied data
-
-# PCoA on bray curtis of rarified
-r.trans <- microbiome::transform(r, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
-r.bray <- ordinate(r, method = "PCoA", distance = "unifrac", weighted = TRUE)
-
-plot_ordination(r.trans, r.bray, shape = "Species", color = "Species") +
-  geom_point(size = 3, aes(alpha = 0.6)) +
-  scale_shape_manual(values = c(15, 16, 17, 18, 19, 20, 21, 22, 23, 24)) +
-  theme(aspect.ratio = 1)
-
-# Plot Rarefaction curves
-
-# FISH
-phyloseq.extended:::ggrare(ps.fish, step = 100, color = "Species", se = FALSE) + ylim(0, 6000)
-
-# Create rarefied ps.fish files
-smallest <- min(sample_sums(ps.fish))
-r <- rarefy_even_depth(ps.fish, sample.size = smallest, verbose = FALSE, replace = TRUE)
-r <- prune_taxa(taxa_sums(r) > 0, r)
-
-phyloseq.extended:::ggrare(r, step = 100, color = "Species", se = FALSE) + ylim(0, 6000)
-
-# EAM
-phyloseq.extended:::ggrare(ps.eam, step = 100, color = "Site", se = FALSE) + ylim(0, 8000)
-
-# Create rarefied ps.eam files
-smallest <- min(sample_sums(ps.eam))
-r <- rarefy_even_depth(ps.eam, sample.size = smallest, verbose = FALSE, replace = TRUE) 
-r <- prune_taxa(taxa_sums(r) > 0, r)
-phyloseq.extended:::ggrare(r, step = 100, color = "Site", se = FALSE) + ylim(0, 8000)
-```
-
-## Goods Coverage 
-Compare rarefied and unrarefied to see if sequencing depth was adequate to reliably describe the bacterial microbiome
-
-### FISH
-
-```{r}
-library(QsRutils)
-
-# FISH
-
-# Extract abundance matrix from the phyloseq object
-OTU1 = as(otu_table(ps.fish), "matrix")
-# transpose
-if(taxa_are_rows(ps.fish)){OTU1 <- t(OTU1)}
-# Coerce to data.frame
-OTUdf = as.data.frame(OTU1)
-
-# samples as rows and OTUs as columns
-goods_result <- goods(OTUdf) # a vegan compatible community data matrix
-goods_result
-# output
-summary(goods_result$goods)
-
-mean(goods_result$goods)
-round(sd(goods_result$goods), 2)
-#write.csv(goods_result, "goods_coverage.csv", row.names = FALSE)
-
-# For Rarefied data FISH
-
-smallest <- min(sample_sums(ps.fish))
-r <- rarefy_even_depth(ps.fish, sample.size = smallest, verbose = FALSE, replace = TRUE)
-r <- prune_taxa(taxa_sums(r) > 0, r)
-
-# Extract abundance matrix from the phyloseq object
-OTU2 = as(otu_table(r), "matrix")
-# transpose
-if(taxa_are_rows(r)){OTU2 <- t(OTU2)}
-# Coerce to data.frame
-OTUdf2 = as.data.frame(OTU2)
-
-# samples as rows and OTUs as columns
-goods_result <- goods(OTUdf2)
-goods_result
-# output
-summary(goods_result$goods)
-
-mean(goods_result$goods)
-round(sd(goods_result$goods), 2)
-#write.csv(goods_result, "goods_coverage_rarefied.csv", row.names = FALSE)
-```
-
-### EAM
-
-```{r}
-# EAM
-
-# Extract abundance matrix from the phyloseq object
-OTU1 = as(otu_table(ps.eam), "matrix")
-if(taxa_are_rows(ps.eam)){OTU1 <- t(OTU1)}
-OTUdf = as.data.frame(OTU1)
-
-# samples as rows and OTUs as columns
-goods_result <- goods(OTUdf)
-goods_result
-# output
-summary(goods_result$goods)
-
-mean(goods_result$goods) # 94.053
-round(sd(goods_result$goods), 2) # 
-#write.csv(goods_result, "goods_coverage.csv", row.names = FALSE)
-
-# For Rarefied data EAM
-
-smallest <- min(sample_sums(ps.eam))
-r <- rarefy_even_depth(ps.eam, sample.size = smallest, verbose = FALSE, replace = TRUE)
-r <- prune_taxa(taxa_sums(r) > 0, r)
-
-# Extract abundance matrix from the phyloseq object
-OTU2 = as(otu_table(r), "matrix")
-if(taxa_are_rows(r)){OTU2 <- t(OTU2)}
-OTUdf2 = as.data.frame(OTU2)
-
-# samples as rows and OTUs as columns
-goods_result <- goods(OTUdf2)
-goods_result
-
-summary(goods_result$goods)
-
-mean(goods_result$goods)
-round(sd(goods_result$goods), 2)
-#write.csv(goods_result, "goods_coverage_rarefied.csv", row.names = FALSE)
-```
-
-# Fig. 3: Relative abundance
-
-## FISH
-Species x Shifting
-
-```{r}
-glom <- tax_glom(ps.fish, taxrank = "phylum")
-
-trans <- transform_sample_counts(glom, function(x) x/sum(x)*100)
-trans <- filter_taxa(trans, function(x) mean(x) > 0.01, TRUE)
-
-long <- psmelt(trans) %>%
-  group_by(OTU, phylum) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-ggplot(long, aes(x = Sample, y = Abundance)) +
-    geom_bar(stat = "identity", aes(fill = phylum), colour = "black", position = "stack") + 
-    facet_wrap(~Species*Shifting, scales = "free_x", nrow = 2) +
-    theme(aspect.ratio = 1, legend.position = "right", axis.text.x = element_blank()) +
-    guides(fill = guide_legend(ncol = 2)) +
-    ylab("Relative Abundance (%)") + xlab("Replicate")
-```
-
-## EAM
-Shifting x Species
-
-```{r}
-glom <- tax_glom(ps.eam, taxrank = "phylum")
-
-trans <- transform_sample_counts(glom, function(x) x/sum(x)*100)
-trans <- filter_taxa(trans, function(x) mean(x) > 0.01, TRUE)
-
-long <- psmelt(trans) %>%
-  group_by(OTU, phylum) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-ggplot(long, aes(x = Sample, y = Abundance)) +
-    geom_bar(stat = "identity", aes(fill = phylum), colour = "black", position = "stack") + 
-    facet_wrap(~Location*Site, scales = "free_x", ncol = 5) +
-    scale_fill_d3(palette = "category20") +
-    theme(aspect.ratio = 1, legend.position = "right", axis.text.x = element_blank()) +
-    guides(fill = guide_legend(ncol = 2)) +
-    ylab("Relative Abundance (%)") + xlab("Replicate")
-```
-
-### Table S2: Relative abundances - fish, EAM, water
-
-```{r}
-# FISH
-ps.genus <- tax_glom(ps.fish, taxrank = "phylum")
-ps.genus <- transform_sample_counts(ps.genus, function(x) x/sum(x)*100)
-ps.genus <- filter_taxa(ps.genus, function(x) mean(x) > 0.01, TRUE)
-
-fishrelabundance <- psmelt(ps.genus) %>%
- group_by(OTU, phylum) %>%
-  summarise(Average_rel = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-#write.csv(fishrelabundance, file = "fish.relative.abundance.all.order2.csv")
-
-# EAM
-ps.genus.eam <- tax_glom(ps.eam, taxrank = "phylum")
-ps.genus.eam <- transform_sample_counts(ps.genus.eam, function(x) x/sum(x)*100)
-ps.genus.eam <- filter_taxa(ps.genus.eam, function(x) mean(x) > 0.01, TRUE)
-
-eamrelabundance <- psmelt(ps.genus.eam) %>%
- group_by(OTU, phylum) %>%
-  summarise(Average_rel = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-#write.csv(eamrelabundance, file = "eam.relative.abundance.all.order.csv")
-
-# WATER
-ps.genus <- tax_glom(ps.water, taxrank = "phylum")
-ps.genus <- transform_sample_counts(ps.genus, function(x) x / sum(x)*100)
-ps.genus <- filter_taxa(ps.genus, function(x) mean(x) > 0.01, TRUE)
-
-relabundance <- psmelt(ps.genus) %>%
- group_by(OTU, phylum) %>%
-  summarise(Average_rel = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-```
-
-### Table S3: Relative abundances - fish species
-
-```{r}
-glom <- tax_glom(ps.fish, taxrank = "order")
-
-#A.dussumieri
-A.dussumieri <- subset_samples(glom, Species == "A.dussumieri")
-A.dussumieri <- transform_sample_counts(A.dussumieri, function(x) x/sum(x)*100)
-A.dussumieri <- filter_taxa(A.dussumieri, function(x) mean(x) > 1, TRUE) # Filters out anything with a relative abundance under 1%
-
-A.dussumieri <- psmelt(A.dussumieri) %>%
-  group_by(Species, Shifting, OTU, phylum, class, order) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.nigricans 
-A.nigricans <- subset_samples(glom, Species == "A.nigricans")
-A.nigricans <- transform_sample_counts(A.nigricans, function(x) x/sum(x)*100)
-A.nigricans <- filter_taxa(A.nigricans, function(x) mean(x) > 1, TRUE)
-
-A.nigricans <- psmelt(A.nigricans) %>%
-  group_by(Species, Shifting, OTU, phylum, class, order) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.nigricauda 
-A.nigricauda <- subset_samples(glom, Species == "A.nigricauda")
-A.nigricauda <- transform_sample_counts(A.nigricauda, function(x) x/sum(x)*100)
-A.nigricauda <- filter_taxa(A.nigricauda, function(x) mean(x) > 1, TRUE)
-
-A.nigricauda <- psmelt(A.nigricauda) %>%
-  group_by(Species, Shifting, OTU, phylum, class, order) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.olivaceus
-A.olivaceus <- subset_samples(glom, Species == "A.olivaceus")
-A.olivaceus <- transform_sample_counts(A.olivaceus, function(x) x/sum(x)*100)
-A.olivaceus <- filter_taxa(A.olivaceus, function(x) mean(x) > 1, TRUE)
-
-A.olivaceus <- psmelt(A.olivaceus) %>%
-  group_by(Species, Shifting, OTU, phylum, class, order) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.triostegus 
-A.triostegus <- subset_samples(glom, Species == "A.triostegus")
-A.triostegus <- transform_sample_counts(A.triostegus, function(x) x/sum(x)*100)
-A.triostegus <- filter_taxa(A.triostegus, function(x) mean(x) > 1, TRUE) 
-
-A.triostegus <- psmelt(A.triostegus) %>%
-  group_by(Species, Shifting, OTU, phylum, class, order) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.blochii
-A.blochii <- subset_samples(glom, Species == "A.blochii")
-A.blochii <- transform_sample_counts(A.blochii, function(x) x/sum(x)*100)
-A.blochii <- filter_taxa(A.blochii, function(x) mean(x) > 1, TRUE)
-
-A.blochii <- psmelt(A.blochii) %>%
-  group_by(Species, Shifting, OTU, phylum, class, order) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.grammoptilus
-A.grammoptilus <- subset_samples(glom, Species == "A.grammoptilus")
-A.grammoptilus <- transform_sample_counts(A.grammoptilus, function(x) x/sum(x)*100)
-A.grammoptilus <- filter_taxa(A.grammoptilus, function(x) mean(x) > 1, TRUE)
-
-A.grammoptilus <- psmelt(A.grammoptilus) %>%
-  group_by(Species, Shifting, OTU, phylum, class, order) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-relabun_fishspecies_order <- rbind(A.dussumieri, A.nigricans, A.nigricauda, A.olivaceus, A.triostegus, A.blochii, A.grammoptilus)
-#View(relabun_fishspecies_order)
-#write.csv(x = relabun_fishspecies_order, file = "relabun_fishspecies_order.csv")
-
-# plot
-ggplot(relabun_fishspecies_order, aes(x = Species, y = Relative_abun)) +
-    geom_bar(stat = "identity", aes(fill = phylum), colour = "black", position = "stack") + 
-    theme(aspect.ratio = 1, legend.position = "right", axis.text.x = element_blank()) +
-    guides(fill = guide_legend(ncol = 2)) +
-    ylab("Relative Abundance (%)") + xlab("Replicate")
-```
-
-
-# Figure S2: Alpha diversity
-## FISH
-
-USING RAREFIED (to smallest, 10966)
-
-https://joey711.github.io/phyloseq/plot_richness-examples.html
-```{r}
-# library(ggplot2)
-smallest <- min(sample_sums(ps.fish))
-r <- rarefy_even_depth(ps.fish, sample.size = smallest, verbose = FALSE, replace = TRUE) 
-
-ps.pruned <- prune_taxa(taxa_sums(r) > 0, r)
-
-# Reorder the x axis?
-plot_richness(ps.pruned, x = "Species", measures=c("Chao1", "Shannon")) +
-  geom_boxplot(outlier.size = 0.1) +
-  theme(aspect.ratio = 1.5, 
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank()
-        ) +
-  ylab("Alpha diversity") +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-```
-
-### Shifting
-```{r}
-library(car)
-library(rstatix)
-# Creates summary table for the numbers to report in reuslts. lmer below for the stats
-
-# CHAO
-results.chao = estimate_richness(ps.pruned, measures = 'Chao1')
-
-results.chao <- results.chao %>%
-  tibble::rownames_to_column(var = "SampleID")
-
-meta <- data.frame(SampleID = sample_data(ps.pruned)$SampleID, 
-                   Shifting = sample_data(ps.pruned)$Shifting)
-meta$SampleID <- str_replace(meta$SampleID, "-", ".")
-results.chao <- left_join(results.chao, meta)
-
-Chao.summary <- results.chao %>%
-                    group_by(Shifting) %>% 
-                    get_summary_stats(Chao1, type = "common")
-
-# SHANNON
-results.shan = estimate_richness(ps.pruned, measures = 'Shannon')
-
-results.shan <- results.shan %>%
-  tibble::rownames_to_column(var = "SampleID")
-
-meta <- data.frame(SampleID = sample_data(ps.pruned)$SampleID,
-                   Shifting = sample_data(ps.pruned)$Shifting)
-meta$SampleID <- str_replace(meta$SampleID, "-", "_")
-results.shan <- left_join(results.shan, meta)
-
-Shan.summary <- results.shan %>%
-                    group_by(Shifting) %>% 
-                    get_summary_stats(Shannon, type = "common")
-```
-
-### lme4
-http://bbolker.github.io/mixedmodels-misc/glmmFAQ.html#should-i-treat-factor-xxx-as-fixed-or-random
-```{r}
-library(lme4)
-library(arm)
-
-alpha.fish <- read.table("mappingFISHalpha.txt", sep = "\t", header = TRUE)
-
-# Shifting
-fish.glm.chao <- aov(Chao1 ~ Shifting, data = alpha.fish)
-anova(fish.glm.chao)
-
-fish.glm.shan <- aov(Shannon ~ Shifting, data = alpha.fish)
-anova(fish.glm.shan)
-
-# Check balanced or unbalanced design
-replications(Chao1 ~ Species + Shifting, alpha.fish)
-
-# fit nested model and LRT uing anova
-# Chao1
-fish.glm.chao <- glmer(Chao1 ~ Species + (1|Shifting:Species), data = alpha.fish)
-summary(fish.glm.chao)
-drop1(fish.glm.chao, test="Chisq") # Type II ANOVA
-
-# Shannon
-fish.glm.shan <- glmer(Shannon ~ Species + (1|Shifting:Species), data = alpha.fish)
-summary(fish.glm.shan)
-drop1(fish.glm.shan, test="Chisq")
-```
-
-## EAM
-
-USING RAREFIED (to smallest at the moment, 4022)
-
-https://joey711.github.io/phyloseq/plot_richness-examples.html
-```{r}
-# library(ggplot2)
-smallest <- min(sample_sums(ps.eam))
-r <- rarefy_even_depth(ps.eam, sample.size = smallest, verbose = FALSE, replace = TRUE)
-
-# prune OTUs that are not present in any of the samples, using rarefied data
-ps.pruned <- prune_taxa(taxa_sums(r) > 0, r)
-
-# Reorder the x axis?
-p <- plot_richness(ps.pruned, x = "Site", measures = c("Chao1", "Shannon")) +
-  geom_boxplot(outlier.size = 0.4) +
-  theme(aspect.ratio = 1.5, 
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank()
-        ) +
-  ylab("Alpha diversity") +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-```
-
-### Location
-```{r}
-library(car)
-library(rstatix)
-# Creates summary table for the numbers to report in reuslts. lmer below for the stats
-
-# SHIFTING
-# CHAO
-results.chao = estimate_richness(ps.pruned, measures = 'Chao1')
-
-results.chao <- results.chao %>%
-  tibble::rownames_to_column(var = "SampleID")
-
-meta <- data.frame(SampleID = sample_data(ps.pruned)$SampleID, 
-                   Location = sample_data(ps.pruned)$Location)
-meta$SampleID <- str_replace(meta$SampleID, "-", ".")
-results.chao <- left_join(results.chao, meta)
-
-Chao.summary <- results.chao %>%
-                    group_by(Location) %>% 
-                    get_summary_stats(Chao1, type = "common")
-
-# SHANNON
-results.shan = estimate_richness(ps.pruned, measures = 'Shannon')
-
-results.shan <- results.shan %>%
-  tibble::rownames_to_column(var = "SampleID")
-
-meta <- data.frame(SampleID = sample_data(ps.pruned)$SampleID,
-                   Location = sample_data(ps.pruned)$Location)
-meta$SampleID <- str_replace(meta$SampleID, "-", "_")
-results.shan <- left_join(results.shan, meta)
-
-Shan.summary <- results.shan %>%
-                    group_by(Location) %>% 
-                    get_summary_stats(Shannon, type = "common")
-```
-
-### lme4
-```{r}
-library(lme4)
-library(lmerTest)
-library(arm)
-
-alpha.eam <- read.table("mappingEAMalpha_SG.txt", sep = "\t", header = TRUE)
-summary(alpha.eam)
-head(alpha.eam)
-
-# Location
-eam.glm.chao <- aov(Chao1 ~ Location, data = alpha.eam)
-anova(eam.glm.chao)
-
-eam.glm.shan <- aov(Shannon ~ Location, data = alpha.eam)
-anova(eam.glm.shan)
-
-# Site
-# Chao1
-eam.glm.chao <- glmer(Chao1 ~ Site + (1|Location:Site), data = alpha.eam)
-summary(eam.glm.chao)
-drop1(eam.glm.chao, test="Chisq")
-
-# Shannon
-eam.glm.shan <- glmer(Shannon ~ Site + (1|Location:Site), data = alpha.eam)
-summary(eam.glm.shan)
-drop1(eam.glm.shan, test="Chisq")
-```
-
 # Beta diversity
 ## FISH
 
 ```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
-# Good tutorial: http://rfunctions.blogspot.com/2019/03/betadisper-and-adonis-homogeneity-of.html
-
 trans.adonis <- microbiome::transform(ps.fish, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
 
 unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
 sampledf <- data.frame(sample_data(trans.adonis))
+
+# ADONIS
+adonis2(formula = unifrac ~ Shifting/Species, data = sampledf, strata = sampledf$Shifting, by = "terms")
 
 # Shifting
 beta.shift <- betadisper(unifrac, sampledf$Shifting)
@@ -961,7 +1126,9 @@ beta.HSD <- TukeyHSD(beta.shift)
 plot(beta.shift)
 permutest(beta.shift, pairwise = TRUE, permutations = 999)
 
-adonis2(formula = unifrac ~ Shifting * Location/Site, data = sampledf, strata = sampledf$Location)
+beta.site <- betadisper(unifrac, sampledf$Site)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Shifting)
 
 # Species
 beta.species <- betadisper(unifrac, sampledf$Species) 
@@ -974,7 +1141,51 @@ beta.HSD <- TukeyHSD(beta.species)
 plot(beta.species)
 permutest(beta.species, pairwise = TRUE, permutations = 999)
 
-adonis2(formula = unifrac ~ Species * Location/Site, data = sampledf, strata = sampledf$Location) # NESTED
+beta_perm <- permutest(beta.species, pairwise = TRUE, permutations = 999)
+
+beta_perm$pairwise
+print(beta_perm$pairwise, digits = 5)
+
+beta_perm$pairwise$permuted
+```
+
+### FISH CORE
+
+```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+trans.adonis <- microbiome::transform(ps.core.fishASVtree, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+
+unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
+sampledf <- data.frame(sample_data(trans.adonis))
+
+# ADONIS
+adonis2(formula = unifrac ~ Shifting/Species, data = sampledf, strata = sampledf$Shifting, by = "terms")
+
+# Shifting
+beta.shift <- betadisper(unifrac, sampledf$Shifting)
+boxplot(beta.shift)
+
+anova(beta.shift)
+beta.HSD <- TukeyHSD(beta.shift)
+  plot(beta.HSD) 
+  
+plot(beta.shift)
+permutest(beta.shift, pairwise = TRUE, permutations = 999)
+
+### SPECIES NESTED IN SHIFTING PERMDISP:
+beta.site <- betadisper(unifrac, sampledf$Species)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Shifting)
+
+# Species
+beta.species <- betadisper(unifrac, sampledf$Species) 
+boxplot(beta.species)
+
+anova(beta.species)
+beta.HSD <- TukeyHSD(beta.species)
+  plot(beta.HSD)
+
+plot(beta.species)
+permutest(beta.species, pairwise = TRUE, permutations = 999)
 ```
 
 ## EAM
@@ -985,8 +1196,15 @@ trans.adonis <- microbiome::transform(ps.eam, transform = "hellinger", target = 
 unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
 sampledf <- data.frame(sample_data(trans.adonis))
 
+# ADONIS
+adonis2(formula = unifrac ~ Location/Site, data = sampledf, strata = sampledf$Location)
+
+### SITE NESTED IN LOCATION PERMDISP:
+beta.site <- betadisper(unifrac, sampledf$Site)
+
+permutest(beta.site,  permutations = 999,  strata = sampledf$Location)
+
 # PERMDISP (betadisper)
-# Location
 beta.location <- betadisper(unifrac, sampledf$Location)
 
 anova(beta.location)
@@ -995,24 +1213,9 @@ plot(beta.HSD)
 
 plot(beta.location)
 permutest(beta.location, pairwise = TRUE, permutations = 999)
-
-adonis(formula = unifrac ~ Location, data = sampledf, permutations = 999) 
-
-# Site
-beta.Site <- betadisper(unifrac, sampledf$Site)
-
-anova(beta.Site)
-beta.HSD <- TukeyHSD(beta.Site)
-plot(beta.HSD)
-
-plot(beta.Site)
-permutest(beta.Site, pairwise = TRUE, permutations = 999)
-
-# ADONIS
-adonis2(formula = unifrac ~ Location/Site, data = sampledf, strata = sampledf$Location)
 ```
 
-### EAM CORE ADONIS
+### EAM CORE
 
 ```{r}
 trans.adonis <- microbiome::transform(ps.core.eam, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
@@ -1020,45 +1223,371 @@ trans.adonis <- microbiome::transform(ps.core.eam, transform = "hellinger", targ
 unifrac <- phyloseq::distance(trans.adonis, method = "bray")
 sampledf <- data.frame(sample_data(trans.adonis))
 
-# PERMDISP (betadisper)
+# ADONIS
+adonis2(formula = unifrac ~ Location/Site, data = sampledf, strata = sampledf$Location)
+
 # Location
-beta.location <- betadisper(unifrac, sampledf$Location)
+beta.loc <- betadisper(unifrac, sampledf$Location)
+boxplot(beta.loc)
 
-anova(beta.location)
-beta.HSD <- TukeyHSD(beta.location)
-plot(beta.HSD)
+anova(beta.loc)
+beta.HSD <- TukeyHSD(beta.loc)
+plot(beta.loc) 
 
-plot(beta.location)
-permutest(beta.location, pairwise = TRUE, permutations = 999)
+permutest(beta.loc, pairwise = TRUE, permutations = 999)
 
-adonis(formula = unifrac ~ Location, data = sampledf, permutations = 999) 
+### SITE NESTED IN LOCATION PERMDISP:
+beta.location <- betadisper(unifrac, sampledf$Site)
+
+permutest(beta.location,  permutations = 999,  strata = sampledf$Location)
 
 # Site
-beta.Site <- betadisper(unifrac, sampledf$Site)
+beta.site <- betadisper(unifrac, sampledf$Site) 
+boxplot(beta.site)
 
-anova(beta.Site)
-beta.HSD <- TukeyHSD(beta.Site)
-plot(beta.HSD)
+anova(beta.site)
+beta.HSD <- TukeyHSD(beta.site)
+  plot(beta.site)
 
-plot(beta.Site)
-permutest(beta.Site, pairwise = TRUE, permutations = 999)
-
-adonis(formula = unifrac ~ Site, data = sampledf, permutations = 999) 
-
-adonis2(formula = unifrac ~ Location/Site, data = sampledf, strata = sampledf$Location)
+plot(beta.site)
+permutest(beta.site, pairwise = TRUE, permutations = 999)
 ```
 
-# Fig. 4 + Table S4: DESeq2
 
-Explanation here : https://support.bioconductor.org/p/63229/
-And here: https://support.bioconductor.org/p/62246/#62250
+## FISH & EAM full dataset - ADONIS
+```{r}
+ps <- readRDS("ps2026.rds")
 
-Cannot use the transformed dataset for this - use ps.family (not ps.transformed as above)
-Use DESeq2 to look for common genera that change across treatments. 
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing water samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
+
+trans.adonis <- microbiome::transform(ps.eamfish, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+
+unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
+sampledf <- data.frame(sample_data(trans.adonis))
+
+adonis2(formula = unifrac ~ Sample_Type, data = sampledf, permutations = 999, strata = sampledf$Site, by = "terms") 
+
+# PERMDISP (betadisper)
+# Sample_Type
+beta.sampletype <- betadisper(unifrac, sampledf$Sample_Type)
+boxplot(beta.sampletype) 
+
+anova(beta.sampletype)
+beta.HSD <- TukeyHSD(beta.sampletype)
+plot(beta.HSD)
+
+plot(beta.sampletype)
+permutest(beta.sampletype, pairwise = TRUE, permutations = 999)
+```
+### CORE EAM vs fish - ADONIS
+```{r}
+ps.corefishEAMASV <- readRDS("ps.corefishEAM-ASVGTDB232.rds")
+
+trans.adonis <- microbiome::transform(ps.corefishEAMASV, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+
+unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
+sampledf <- data.frame(sample_data(trans.adonis))
+
+adonis2(formula = unifrac ~ Sample_Type, data = sampledf, permutations = 999, by = "terms") 
+
+adonis2(formula = unifrac ~ Sample_Type * Shifting/Species, data = sampledf, permutations = 999, strata = sampledf$Shifting, by = "terms") 
+
+# PERMDISP (betadisper)
+# Sample_Type
+beta.sampletype <- betadisper(unifrac, sampledf$Sample_Type)
+boxplot(beta.sampletype) 
+
+anova(beta.sampletype)
+beta.HSD <- TukeyHSD(beta.sampletype)
+plot(beta.HSD)
+
+plot(beta.sampletype)
+permutest(beta.sampletype, pairwise = TRUE, permutations = 999)
+
+# Shifting
+beta.Shifting <- betadisper(unifrac, sampledf$Shifting)
+boxplot(beta.Shifting)
+
+anova(beta.Shifting)
+beta.HSD <- TukeyHSD(beta.Shifting)
+plot(beta.HSD)
+
+plot(beta.Shifting)
+permutest(beta.Shifting, pairwise = TRUE, permutations = 999)
+```
+
+#### EAM + NON-Shifting - ADONIS
+
+```{r}
+ps <- readRDS("ps2026.rds")
+
+ps.eam.nonshift <- subset_samples(ps, Sample_Type != "Water")
+ps.eam.nonshift <- subset_samples(ps.eam.nonshift, Shifting != "Range_shifting") 
+ps.eam.nonshift <- prune_taxa(taxa_sums(ps.eam.nonshift) > 1, ps.eam.nonshift)
+
+trans.adonis <- microbiome::transform(ps.eam.nonshift, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+
+unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
+sampledf <- data.frame(sample_data(trans.adonis))
+
+adonis2(formula = unifrac ~ Shifting, data = sampledf, permutations = 999, by = "terms") 
+
+# PERMDISP (betadisper)
+# NON-Shifting
+beta.Shifting <- betadisper(unifrac, sampledf$Shifting)
+boxplot(beta.Shifting)
+
+anova(beta.Shifting)
+beta.HSD <- TukeyHSD(beta.Shifting)
+plot(beta.HSD)
+
+plot(beta.Shifting)
+permutest(beta.Shifting, pairwise = TRUE, permutations = 999)
+```
+
+
+#### EAM + Shifting - ADONIS
+
+```{r}
+ps <- readRDS("ps2026.rds")
+
+ps.eam.shift <- subset_samples(ps, Sample_Type != "Water") # Removing water samples
+ps.eam.shift <- subset_samples(ps.eam.shift, Shifting != "Non_shifting")
+ps.eam.shift <- prune_taxa(taxa_sums(ps.eam.shift) > 1, ps.eam.shift)
+
+trans.adonis <- microbiome::transform(ps.eam.shift, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+
+unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
+sampledf <- data.frame(sample_data(trans.adonis))
+
+adonis2(formula = unifrac ~ Shifting, data = sampledf, permutations = 999, by = "terms") 
+
+# PERMDISP (betadisper)
+# Shifting
+beta.Shifting <- betadisper(unifrac, sampledf$Shifting)
+boxplot(beta.Shifting)
+
+anova(beta.Shifting)
+beta.HSD <- TukeyHSD(beta.Shifting)
+plot(beta.HSD)
+
+plot(beta.Shifting)
+permutest(beta.Shifting, pairwise = TRUE, permutations = 999)
+```
+
+## FISH & EAM - ADONIS
+```{r}
+ps <- readRDS("ps2026.rds")
+
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing water samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
+
+trans.adonis <- microbiome::transform(ps.eamfish, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
+
+unifrac <- phyloseq::distance(trans.adonis, method = "wunifrac")
+sampledf <- data.frame(sample_data(trans.adonis))
+
+
+adonis2(formula = unifrac ~ Species, data = sampledf, permutations = 999, strata = sampledf$Site) # Do microbiomes differ among EAM and the seven fish species?
+
+# PERMDISP (betadisper)
+# Species
+beta.Species <- betadisper(unifrac, sampledf$Species)
+boxplot(beta.Species) 
+
+anova(beta.Species)
+beta.HSD <- TukeyHSD(beta.Species)
+plot(beta.HSD)
+
+plot(beta.Species)
+permutest(beta.Species, pairwise = TRUE, permutations = 999)
+
+
+# Triostegus - # EAM microbiome vs A. triostegus gut microbiome (at Lagoon Entrance East only)
+tri_data3 <- sampledf %>%
+  dplyr::filter(Site == "Lagoon_entrance_east",
+         Sample_Type == "EAM" | Species == "A.triostegus")
+
+table(tri_data3$Sample_Type)
+ # EAM Fish 
+ #   6   11 
+table(tri_data3$Species)
+# A.triostegus          EAM 
+#           11            6 
+
+tri_unifrac <- as.dist(as.matrix(unifrac)[rownames(tri_data3), rownames(tri_data3)])
+
+adonis2(tri_unifrac ~ Sample_Type, data = tri_data3, permutations = 999)
+
+# Olivaceus
+oli_data <- sampledf %>%
+  dplyr::filter(
+    Species == "A.olivaceus" |
+    (Sample_Type == "EAM" & Site %in% c("Outer_Algae_Flats", "Keyhole")))
+
+oli_unifrac <- as.dist(as.matrix(unifrac)[rownames(oli_data), rownames(oli_data)])
+
+adonis2(oli_unifrac ~ Sample_Type, data = oli_data, permutations = 999)
+# 	A.nigricauda
+nigricauda_data <- sampledf %>%
+  dplyr::filter(
+    Species == "A.nigricauda" |
+    (Sample_Type == "EAM" & Site %in% c("Lagoon_entrance_west")))
+
+nigricauda_unifrac <- as.dist(as.matrix(unifrac)[rownames(nigricauda_data), rownames(nigricauda_data)])
+
+adonis2(nigricauda_unifrac ~ Sample_Type, data = nigricauda_data, permutations = 999)
+
+# A.nigricans
+nigricans_data <- sampledf %>%
+  dplyr::filter(
+    Species == "A.nigricans" |
+    (Sample_Type == "EAM" & Site %in% c("Outer_Algae_Flats")))
+
+nigricans_unifrac <- as.dist(as.matrix(unifrac)[rownames(nigricans_data), rownames(nigricans_data)])
+
+adonis2(nigricans_unifrac ~ Sample_Type, data = nigricans_data, permutations = 999)
+
+# A.grammoptilus
+gram_data <- sampledf %>%
+  dplyr::filter(
+    Species == "A.grammoptilus" |
+    (Sample_Type == "EAM" & Site %in% c("South_Algae_Flats")))
+
+gram_unifrac <- as.dist(as.matrix(unifrac)[rownames(gram_data), rownames(gram_data)])
+
+adonis2(gram_unifrac ~ Sample_Type, data = gram_data, permutations = 999)
+
+# A.dussumieri
+dus_data <- sampledf %>%
+  dplyr::filter(
+    Species == "A.dussumieri" |
+    (Sample_Type == "EAM" & Site %in% c("Keyhole")))
+
+dus_unifrac <- as.dist(as.matrix(unifrac)[rownames(dus_data), rownames(dus_data)])
+
+adonis2(dus_unifrac ~ Sample_Type, data = dus_data, permutations = 999)
+
+# A.blochii
+bloc_data <- sampledf %>%
+  dplyr::filter(
+    Species == "A.blochii" |
+    (Sample_Type == "EAM" & Site %in% c("South_Algae_Flats")))
+
+bloc_unifrac <- as.dist(as.matrix(unifrac)[rownames(bloc_data), rownames(bloc_data)])
+
+adonis2(bloc_unifrac ~ Sample_Type, data = bloc_data, permutations = 999)
+
+fish_only <- sampledf %>% 
+  filter(Sample_Type == "Fish")
+
+ggplot(fish_only,
+       aes(x = reorder(Species, Dist_EAM, median),
+           y = Dist_EAM)) +
+  geom_boxplot(fill = "#A6CEE3") +
+  geom_jitter(width = 0.15, alpha = 0.6) +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "Fish species",
+       y = "Distance to EAM microbiome",
+       title = "Divergence of fish gut microbiomes from EAM communities") # Lower values → microbiome more similar to EAM, Higher values → stronger host filtering, This plot matches the Kruskal–Wallis test exactly.
+
+dist_summary <- fish_only %>%
+  group_by(Species) %>%
+  summarise(mean_dist = mean(Dist_EAM),
+            se = sd(Dist_EAM)/sqrt(n()))
+
+ggplot(dist_summary,
+       aes(x = reorder(Species, mean_dist),
+           y = mean_dist)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = mean_dist - se,
+                    ymax = mean_dist + se),
+                width = 0.2) +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "Fish species",
+       y = "Mean distance to EAM microbiome")
+
+library(phyloseq)
+
+ordination <- ordinate(ps.eamfish,
+                       method = "PCoA",
+                       distance = "unifrac")
+
+manual_colors <- c(
+  "A.blochii"      = "#A6CEE3",
+  "A.dussumieri"   = "#FB9A99",
+  "A.grammoptilus" = "#1F78B4",
+  "A.nigricans"    = "#B2DF8A",
+  "A.nigricauda"   = "#33A02C",
+  "A.olivaceus"    = "#E31A1C",
+  "A.triostegus"   = "#FF7F00",
+  "EAM"            = "#B15928")
+
+plot_ordination(ps.eamfish, ordination,
+                color = "Species",
+                shape = "Sample_Type") +
+  geom_point(size = 5) +
+   #scale_colour_brewer(palette = "Paired") +
+  scale_colour_manual(values = manual_colors) +
+  stat_ellipse(aes(group = Species),
+               level = 0.8, linewidth = 0.5) +
+  theme_bw() +  labs(color = "Species", shape = "Sample Type") +  theme(axis.text.x = element_text(colour = "black", size = 11), axis.text.y = element_text(colour = "black", size = 11)) +
+  theme(axis.title.x = element_text(colour = "black", size = 11), axis.title.y = element_text(colour = "black", size = 11),
+  legend.title = element_text(size = 11), legend.text = element_text(size = 11))
+```
+## Pairwise adonis
+```{r}
+library(pairwiseAdonis)
+
+pw_results <- pairwise.adonis2(unifrac ~ Species, data = sampledf, strata = "Site") # All sig different (p < 0.02) except OTI15 and OTI 12 (p = 0.128)
+pw_results
+```
+
+## Heatmap of fish-EAM similarity - taxa driving the differences
+```{r}
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(pheatmap)
+
+abund_table <- psmelt(tax_glommed) %>%
+  group_by(Sample_Type, Species, Shifting, order, family, genus) %>%
+  summarise(mean_abundance = mean(Abundance), .groups = "drop")
+
+abund_table <- abund_table %>%
+  mutate(Order_Family_Genus = paste(order, family, genus, sep = "_"))
+
+
+top_genera <- abund_table %>%
+  filter(Sample_Type == "Fish") %>%
+  group_by(Species, genus) %>%
+  summarise(mean_abund = mean(mean_abundance), .groups = "drop") %>%
+  group_by(Species) %>%
+  slice_max(order_by = mean_abund, n = 10) %>%
+  ungroup() %>%
+  distinct(genus)
+
+heatmap_top <- abund_table %>%
+  filter(genus %in% top_genera$genus) %>%
+  mutate(Group = ifelse(Sample_Type == "EAM", "EAM", Species)) %>%
+  group_by(Group, Order_Family_Genus) %>%
+  summarise(mean_abundance = mean(mean_abundance), .groups = "drop") %>%
+  pivot_wider(names_from = Group, values_from = mean_abundance) %>%
+  column_to_rownames("Order_Family_Genus")
+
+heatmap_top[is.na(heatmap_top)] <- 0
+
+pheatmap(as.matrix(heatmap_top),  scale = "row",  cluster_rows = TRUE,  cluster_cols = FALSE,  color = colorRampPalette(c("royalblue1", "white", "orchid"))(100),  main = "Microbial family–genus composition of EAM and fish gut microbiomes (top 10 genera per species)",  fontsize = 10,  border_color = "grey60",  legend = TRUE)
+```
+
+# DESeq2
+## GENUS
 
 Note: Positive Log2 foldchange values represent higher abundance in left vs right Site name 
 ```{r}
-# Use DESeq2 to test for differential abundance of Family-level assignments between Treatments (like t test, testing every OTU and in each treatment)
 
 library("DESeq2")
 library("forcats")
@@ -1066,42 +1595,116 @@ library("tibble")
 library("dplyr")
 
 ## Run at genus level
-glom <- tax_glom(ps.fish, taxrank = "genus")
+glom <- tax_glom(ps.fish, taxrank = "Genus", NArm = TRUE)
 
-gm_mean = function(x, na.rm = TRUE){  exp(sum(log(x[x > 0]), na.rm = na.rm) / length(x))}
+tax_df <- as.data.frame(as(tax_table(glom), "matrix")) %>%
+  rownames_to_column("TaxaID")
 
-resultstax <- as.data.frame(tax_table(glom)@.Data)
-resultstax <- rownames_to_column(resultstax, var = "SampleID")
+resultstax <- as.data.frame(as(tax_table(glom), "matrix")) %>%
+  rownames_to_column(var = "TaxaID") %>%   # keep unique ID
+  mutate(Genus = Genus)
 
 alpha <- 0.05
 ps.core.shifting <- phyloseq_to_deseq2(glom, ~ Shifting)
+gm_mean <- function(x, na.rm = TRUE){
+  exp(sum(log(x[x > 0]), na.rm = na.rm) / length(x))}
 geoMeans <- apply(counts(ps.core.shifting), 1, gm_mean)
-estszef <- estimateSizeFactors(ps.core.shifting, geoMeans = geoMeans)
-dsq <- DESeq(estszef, fitType = "local")
+ps.core.shifting <- estimateSizeFactors(ps.core.shifting, geoMeans = geoMeans)
+dsq <- DESeq(ps.core.shifting, fitType = "local")
 
-Shifting <- results(dsq, cooksCutoff = FALSE, contrast = c("Shifting", "Non_shifting", "Range_shifting"), tidy = TRUE) %>%
-  filter(padj < alpha) %>%
-  left_join(., resultstax, by = c("row" = "SampleID")) %>%
+Shifting <- results(
+  dsq,
+  cooksCutoff = FALSE,  contrast = c("Shifting", "Non_shifting", "Range_shifting")) %>%
+  as.data.frame() %>%
+  rownames_to_column("TaxaID") %>%
+  left_join(tax_df, by = "TaxaID") %>%
+  filter(padj < 0.05) %>%
+  dplyr::select(Phylum, Class, Order, Family, Genus, log2FoldChange, lfcSE, pvalue, padj) %>%
+  arrange(padj) %>%
   mutate(test = "Non-range expanding v Range expanding")
-#write.csv(Shifting, file = "differential abundance_Shifting.csv")
 
-library("drlib")
 
 # Plot
 error <- Shifting$lfcSE
 
-ggplot(Shifting, aes(x = log2FoldChange, y = forcats::fct_rev(factor(genus)))) +
+ggplot(Shifting, aes(x = log2FoldChange, y = forcats::fct_rev(factor(order)))) +
   geom_point(size = 3) +
   facet_grid(~ test) +
   theme(aspect.ratio = 16/9) +
   geom_vline(xintercept = 0)
 
-## Run at zOTU level
+
+## OR COLOUR BY GROUP:
+results.shifting <- rbind(Shifting) %>%
+  mutate(class = fct_reorder(Class, log2FoldChange))
+
+ggplot(results.shifting, aes(x = log2FoldChange, y = reorder_within(Family, -log2FoldChange, Genus), colour = Phylum)) +
+  geom_point(size = 3) +
+scale_colour_brewer(palette = "Paired") +
+  facet_grid(~ test, scales = "free_x") +
+  theme(aspect.ratio = 50/9, legend.position = "right", panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  ylab("Family_Genus") +
+  geom_vline(xintercept = 0) 
+
+## Subset plot of the top 20:
+results.shifting2 <- results.shifting %>%
+  mutate(
+    Enriched_in = case_when(
+      log2FoldChange > 0 ~ "Non-range expanding",
+      log2FoldChange < 0 ~ "Range expanding",
+      TRUE ~ NA_character_))
+
+top20 <- results.shifting2 %>%
+  distinct(Genus, .keep_all = TRUE) %>%   # one entry per family
+  arrange(desc(log2FoldChange)) %>%
+  slice_head(n = 15) %>%
+  bind_rows(
+    results.shifting2 %>%
+      distinct(Genus, .keep_all = TRUE) %>%
+      arrange(log2FoldChange) %>%
+      slice_head(n = 15))
+
+library(RColorBrewer)
+results.shifting2$Order <- factor(results.shifting2$Order) # Need to convert order to a factor 
+
+taxa_names <- levels(results.shifting2$Order)
+base_colors <- brewer.pal(min(length(taxa_names), 12), "Paired")
+mycolors <- colorRampPalette(base_colors)(length(taxa_names))
+names(mycolors) <- taxa_names
+
+# CHeck these are identical, otherwise colours don't map correctly:
+levels(top20$Order)
+names(mycolors)
+
+ggplot(top20, aes(x = log2FoldChange, y = reorder_within(Family, -log2FoldChange, Genus), colour = Order)) +  geom_point(size = 5) +  
+  #scale_colour_viridis_d() +
+  scale_colour_manual(values = mycolors) +
+  #scale_colour_brewer(palette = "Paired") +
+  facet_grid(~ test, scales = "free_x") +
+ theme_bw() + theme(aspect.ratio = 2/1,legend.position = "right",panel.grid.major = element_line(colour = "lightgrey", size = 0.5),  panel.grid.minor = element_line(colour = "lightgrey", size = 0.5),  axis.text = element_text(size = 11, colour = "black"), axis.title = element_text(size = 11, colour = "black"),
+    strip.text = element_text(size = 11, colour = "black"),  legend.title = element_text(size = 11, colour = "black"),
+    legend.text = element_text(size = 11, colour = "black")) + ylab("Family_Genus") + geom_vline(xintercept = 0) + xlim(-10, 30)
+
+
+# How many unique genera are there?
+results.shifting %>%  summarise(n_genus = n_distinct(Genus))
+
+nrow(results.shifting)
+```
+
+## ASV level (for table)
+
+```{r}
+library("DESeq2")
+library("forcats")
+library("tibble")
+library("dplyr")
 
 gm_mean = function(x, na.rm = TRUE){  exp(sum(log(x[x > 0]), na.rm = na.rm) / length(x))} # calculate geometric means prior to estimate size factors
 
 resultstax <- as.data.frame(tax_table(ps.fish)@.Data)
-resultstax <- rownames_to_column(resultstax, var = "SampleID")
+resultstax <- rownames_to_column(resultstax, var = "ASVID")
 
 alpha <- 0.05
 ps.core.shifting <- phyloseq_to_deseq2(ps.fish, ~ Shifting)
@@ -1110,30 +1713,40 @@ estszef <- estimateSizeFactors(ps.core.shifting, geoMeans = geoMeans)
 dsq <- DESeq(estszef, fitType = "local")
 resultsNames(dsq)
 
-Shifting <- results(dsq, cooksCutoff = FALSE, contrast = c("Shifting", "Non_shifting", "Range_shifting"), tidy = TRUE) %>%
-  filter(padj < alpha) %>%
-  left_join(., resultstax, by = c("row" = "SampleID")) %>%
+Shifting <- results(
+  dsq,
+  cooksCutoff = FALSE,
+  contrast = c("Shifting", "Non_shifting", "Range_shifting")) %>%
+  as.data.frame() %>%
+  rownames_to_column("ASVID") %>%
+  left_join(resultstax, by = "ASVID") %>%
+  filter(padj < 0.05) %>%
   mutate(test = "Non-range expanding v Range expanding")
-#write.csv(Shifting, file = "differential abundance_Shifting_ASV level.csv")
-summary(Shifting)
+
+nrow(Shifting)
 
 error <- Shifting$lfcSE
 
 ggplot(Shifting, aes(x = log2FoldChange, y = forcats::fct_rev(factor(order)))) +
-  #geom_errorbarh(aes(xmin = log2FoldChange + error, xmax = log2FoldChange - error)) +
   geom_point(size = 3) +
   facet_grid(~ test) +
   theme(aspect.ratio = 16/9) +
   geom_vline(xintercept = 0) +
   ylab("Order")
+
+Shifting %>%
+  group_by(order) %>%
+  summarise(mean_log2FC = mean(log2FoldChange)) %>%
+  ggplot(aes(mean_log2FC, forcats::fct_reorder(order, mean_log2FC))) +
+  geom_point()
 ```
 
-# Fig. 5: FISH Core microbiome
-## FISH
-100% core genera
+
+# FISH Core microbiome
+### GENUS all
 ```{r}
-# GENUS LEVEL - 1 core - Epulo
-glom <- tax_glom(ps.fish, taxrank = "genus")
+# GENUS LEVEL - 4 core - Epulo
+glom <- tax_glom(ps.fish, taxrank = "Genus")
 
 trans.f.glom <- transform_sample_counts(glom, function(x) x/sum(x)*100)
 
@@ -1142,13 +1755,23 @@ flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(trans.f.glom, flist)
 all_core.glom <- prune_taxa(a, trans.f.glom)
 all_core.glom.melt <- psmelt(all_core.glom) %>%
- group_by(Species, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(OTU, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-ggplot(all_core.glom.melt, aes(x = reorder(Species, -Average_rel), y = Average_rel)) +
-    geom_bar(stat = "identity", aes(fill = genus), position = "stack") +
-        theme(aspect.ratio = 1, legend.position = "right") +
+all_core.glom.melt <- psmelt(all_core.glom) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
+  summarise(Average_rel = mean(Abundance),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+ggplot(all_core.glom.melt, aes(x = reorder(sample_Species, -Average_rel), y = Average_rel)) +
+    geom_bar(stat = "identity", aes(fill = Genus), position = "stack") +
+    #geom_errorbar(aes(ymin = Average_rel - SE_rel, ymax = Average_rel + SE_rel)) +
+    facet_wrap(~Shifting, ncol = 4, scales = "free_x") +
+    #scale_y_continuous(labels = scales::percent) +
+    #scale_fill_manual(values = pal) + # unhash for wes anderson colours
+    scale_fill_d3(palette = "category20") +
+    theme(aspect.ratio = 1, legend.position = "right") +
     theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
     guides(fill = guide_legend(ncol = 1)) +
     ylab("Relative Abundance (%)") +
@@ -1156,170 +1779,12 @@ ggplot(all_core.glom.melt, aes(x = reorder(Species, -Average_rel), y = Average_r
     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 ```
 
-### Table S5: - Fish core per SPECIES
-100% core genera
+## SHIFTING: GENUS
 
 ```{r}
-glom <- tax_glom(ps.fish, taxrank = "genus")
+glom <- tax_glom(ps.fish, taxrank = "Genus")
 
-#A.dussumieri - 15 CORE
-A.dussumieri <- subset_samples(glom, Species == "A.dussumieri")
-A.dussumieri.trans <- transform_sample_counts(A.dussumieri, function(x) x/sum(x)*100)
-
-n <- length(sample_names(A.dussumieri.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(A.dussumieri.trans, flist)
-A.dussumieri_core <- prune_taxa(a, A.dussumieri.trans) 
-A.dussumieri_core.melt <- psmelt(A.dussumieri_core) %>%
- group_by(Species, OTU, kingdom, phylum, class, order) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.nigricans - 39 CORE
-A.nigricans <- subset_samples(glom, Species == "A.nigricans")
-A.nigricans.trans <- transform_sample_counts(A.nigricans, function(x) x/sum(x)*100)
-
-n <- length(sample_names(A.nigricans.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(A.nigricans.trans, flist)
-A.nigricans_core <- prune_taxa(a, A.nigricans.trans) 
-A.nigricans_core.melt <- psmelt(A.nigricans_core) %>%
- group_by(Species, OTU, kingdom, phylum, class, order) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.nigricauda - 71 CORE
-A.nigricauda <- subset_samples(glom, Species == "A.nigricauda")
-A.nigricauda.trans <- transform_sample_counts(A.nigricauda, function(x) x/sum(x)*100)
-
-n <- length(sample_names(A.nigricauda.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(A.nigricauda.trans, flist)
-A.nigricauda_core <- prune_taxa(a, A.nigricauda.trans) 
-A.nigricauda_core.melt <- psmelt(A.nigricauda_core) %>%
- group_by(Species, OTU, kingdom, phylum, class, order) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.olivaceus - 46 CORE
-A.olivaceus <- subset_samples(glom, Species == "A.olivaceus")
-A.olivaceus.trans <- transform_sample_counts(A.olivaceus, function(x) x/sum(x)*100)
-
-n <- length(sample_names(A.olivaceus.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(A.olivaceus.trans, flist)
-A.olivaceus_core <- prune_taxa(a, A.olivaceus.trans) 
-A.olivaceus_core.melt <- psmelt(A.olivaceus_core) %>%
- group_by(Species, OTU, kingdom, phylum, class, order) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.triostegus - 9 CORE
-A.triostegus <- subset_samples(glom, Species == "A.triostegus")
-A.triostegus.trans <- transform_sample_counts(A.triostegus, function(x) x/sum(x)*100)
-
-n <- length(sample_names(A.triostegus.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(A.triostegus.trans, flist)
-A.triostegus_core <- prune_taxa(a, A.triostegus.trans) 
-A.triostegus_core.melt <- psmelt(A.triostegus_core) %>%
- group_by(Species, OTU, kingdom, phylum, class, order) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.blochii - 87 CORE
-A.blochii <- subset_samples(glom, Species == "A.blochii")
-A.blochii.trans <- transform_sample_counts(A.blochii, function(x) x/sum(x)*100)
-
-n <- length(sample_names(A.blochii.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(A.blochii.trans, flist)
-A.blochii_core <- prune_taxa(a, A.blochii.trans) 
-A.blochii_core.melt <- psmelt(A.blochii_core) %>%
- group_by(Species, OTU, kingdom, phylum, class, order) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-#A.grammoptilus - 34 CORE
-A.grammoptilus <- subset_samples(glom, Species == "A.grammoptilus")
-A.grammoptilus.trans <- transform_sample_counts(A.grammoptilus, function(x) x/sum(x)*100)
-
-n <- length(sample_names(A.grammoptilus.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(A.grammoptilus.trans, flist)
-A.grammoptilus_core <- prune_taxa(a, A.grammoptilus.trans) 
-A.grammoptilus_core.melt <- psmelt(A.grammoptilus_core) %>%
- group_by(Species, OTU, kingdom, phylum, class, order) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-core_100_species_genus <- rbind(A.dussumieri_core.melt, A.nigricans_core.melt, A.nigricauda_core.melt, A.olivaceus_core.melt, A.triostegus_core.melt, A.blochii_core.melt, A.grammoptilus_core.melt)
-#View(core_100_species_genus)
-
-ps.core <- merge_phyloseq(A.dussumieri_core, A.nigricans_core, A.nigricauda_core, A.olivaceus_core, A.triostegus_core, A.blochii_core, A.grammoptilus_core)
-
-#write.csv(x = core_100_species_genus, file = "core_100_species_genus.csv")
-
-ggplot(core_100_species_genus, aes(x = Species, y = Average_rel)) +
-    geom_bar(stat = "identity", aes(fill = order), position = "stack") + 
-    theme(aspect.ratio = 1, legend.position = "bottom") +
-    guides(fill = guide_legend(ncol = 3)) +
-    ylab("Relative Abundance (%)") +
-    scale_x_discrete(limits = c("A.nigricans", "A.triostegus", "A.blochii", "A.nigricauda", "A.olivaceus", "A.grammoptilus",  "A.dussumieri")) +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-```
-
-#### Figure S3: Core Relative abundance
-
-```{r}
-# FISH
-glom <- tax_glom(ps.core, taxrank = "phylum")
-
-trans <- transform_sample_counts(glom, function(x) x/sum(x)*100)
-trans <- filter_taxa(trans, function(x) mean(x) > 0.01, TRUE)
-
-long <- psmelt(trans) %>%
-  group_by(OTU, phylum, Shifting, Species, Sample) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-ggplot(long, aes(x = Sample, y = Relative_abun)) +
-    geom_bar(stat = "identity", aes(fill = phylum), colour = "black", position = "stack") + 
-    facet_wrap(~Shifting*Species, scales = "free_x", nrow = 1) +
-    #scale_y_continuous(labels = scales::percent) +
-    theme(aspect.ratio = 1, legend.position = "bottom", axis.text.x = element_blank()) +
-    guides(fill = guide_legend(ncol = 4)) +
-    ylab("Relative Abundance (%)") + xlab("Replicate")
-
-
-# EAM
-glom <- tax_glom(ps.core.eam, taxrank = "phylum")
-
-trans <- transform_sample_counts(glom, function(x) x/sum(x)*100)
-trans <- filter_taxa(trans, function(x) mean(x) > 0.01, TRUE)
-
-long <- psmelt(trans) %>%
-  group_by(OTU, phylum, Location, Site, Sample) %>%
-  summarise(Relative_abun = sum(Abundance/n()),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-ggplot(long, aes(x = Sample, y = Relative_abun)) +
-    geom_bar(stat = "identity", aes(fill = phylum), colour = "black", position = "stack") + 
-    facet_wrap(~Location*Site, scales = "free_x", nrow = 1) +
-    #scale_y_continuous(labels = scales::percent) +
-    theme(aspect.ratio = 1, legend.position = "bottom", axis.text.x = element_blank()) +
-    guides(fill = guide_legend(ncol = 5)) +
-    ylab("Relative Abundance (%)") + xlab("Replicate")
-```
-
-### SHIFTING 
-100% core genera
-```{r}
-# Shifting and non-shifting - NO CORE at 100% OTU level for both in ps.fish
-
-glom <- tax_glom(ps.fish, taxrank = "genus")
-
-# Non-Shifting - 11 CORE
+# Non-Shifting
 Non_shifting <- subset_samples(glom, Shifting == "Non_shifting")
 Non_shifting.trans <- transform_sample_counts(Non_shifting, function(x) x/sum(x)*100)
 
@@ -1328,13 +1793,11 @@ flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(Non_shifting.trans, flist)
 Non_shifting_core <- prune_taxa(a, Non_shifting.trans) 
 Non_shifting_core.melt <- psmelt(Non_shifting_core) %>%
- group_by(Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(Shifting, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-# write.csv(A.dussumieri_core.melt, file = "A.dussumieri_core100.csv")
-
-# Shifting - 2 CORE
+# Shifting 
 Range_shifting <- subset_samples(glom, Shifting == "Range_shifting")
 Range_shifting.trans <- transform_sample_counts(Range_shifting, function(x) x/sum(x)*100)
 
@@ -1343,153 +1806,119 @@ flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(Range_shifting.trans, flist)
 Range_shifting_core <- prune_taxa(a, Range_shifting.trans) 
 Range_shifting_core.melt <- psmelt(Range_shifting_core) %>%
- group_by(Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(Shifting, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-# write.csv(A.dussumieri_core.melt, file = "A.dussumieri_core100.csv")
-
 # Plot
 core_100_shifting_genus <- rbind(Range_shifting_core.melt, Non_shifting_core.melt)
-#View(core_100_shifting_genus)
 
 ggplot(core_100_shifting_genus, aes(x = Shifting, y = Average_rel)) +
-    geom_bar(stat = "identity", aes(fill = family), position = "stack") + 
-    theme(aspect.ratio = 1, legend.position = "bottom") +
-    guides(fill = guide_legend(ncol = 2)) +
+    geom_bar(stat = "identity", aes(fill = Genus), position = "stack") + 
+    scale_fill_d3(palette = "category20") +
+    theme(aspect.ratio = 1, legend.position = "right") +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    guides(fill = guide_legend(ncol = 1)) +
     ylab("Relative Abundance (%)")
 ```
 
-### FISH CORE ADONIS
+
+### OTU fish species
 ```{r}
-# *** ps.core run at genus level on ps.fish without phy.tree ***
 
-# ADONIS = "permutational manova"
-trans.adonis <- microbiome::transform(ps.core, transform = "hellinger", target = "OTU", shift = 0, scale = 1)
-unifrac <- phyloseq::distance(trans.adonis, method = "bray") # NO PHY TREE SO ONLY USING BRAY HERE *********
-sampledf <- data.frame(sample_data(trans.adonis))
+ps <- phyloseq(otu_table(ps),  tax_table(ps),  sample_data(ps),  refseq(ps))
 
-# Shifting
-# PERMDISP (betadisper)
-beta.shift <- betadisper(unifrac, sampledf$Shifting)
-boxplot(beta.shift)
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing WATER samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
 
-anova(beta.shift)
-
-plot(beta.shift, ellipse = TRUE, hull = FALSE, conf = 0.8)
-plot(beta.shift)
-permutest(beta.shift, pairwise = TRUE, permutations = 999)
-
-adonis2(formula = unifrac ~ Shifting * Location/Site, data = sampledf, strata = sampledf$Location)
-
-# Species
-# PERMDISP (betadisper)
-beta.species <- betadisper(unifrac, sampledf$Species) 
-boxplot(beta.species)
-
-anova(beta.species)
-beta.HSD <- TukeyHSD(beta.species)
-plot(beta.HSD)
-
-# visualise group dispersions (distance from centroids) and composition (groups overlapping or separate)
-plot(beta.species)
-plot(beta.species, ellipse = TRUE, hull = FALSE, conf = 0.90)
-
-# Check this statistically - if the dispersions are the same
-permutest(beta.species, pairwise = TRUE, permutations = 999)
-
-adonis2(formula = unifrac ~ Species * Location/Site, data = sampledf, strata = sampledf$Location)
-```
-
-# Figure S4 + Table S6: DESeq2 on core
-Creating ps.core on untransformed data for DESEq2
-
-Run at the 100% OTU level fish species
-
-```{r}
-# FIRST - create the ps.core object (different from above, this is at OTU level) - glom to genus at next step in DESeq2 code below chunk
-
-#A.dussumieri - 6 CORE
-A.dussumieri.trans <- subset_samples(ps.fish, Species == "A.dussumieri")
+#A.dussumieri
+A.dussumieri <- subset_samples(ps.eamfish, Species == "A.dussumieri")
+A.dussumieri.trans <- transform_sample_counts(A.dussumieri, function(x) x/sum(x)*100)
 
 n <- length(sample_names(A.dussumieri.trans))
 flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(A.dussumieri.trans, flist)
 A.dussumieri_core <- prune_taxa(a, A.dussumieri.trans) 
 A.dussumieri_core.melt <- psmelt(A.dussumieri_core) %>%
- group_by(Species, Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-#A.nigricans - 106 CORE
-A.nigricans.trans <- subset_samples(ps.fish, Species == "A.nigricans")
+#A.nigricans -
+A.nigricans <- subset_samples(ps.eamfish, Species == "A.nigricans")
+A.nigricans.trans <- transform_sample_counts(A.nigricans, function(x) x/sum(x)*100)
 
 n <- length(sample_names(A.nigricans.trans))
 flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(A.nigricans.trans, flist)
 A.nigricans_core <- prune_taxa(a, A.nigricans.trans) 
 A.nigricans_core.melt <- psmelt(A.nigricans_core) %>%
- group_by(Species, Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-#A.nigricauda - 156 CORE
-A.nigricauda.trans <- subset_samples(ps.fish, Species == "A.nigricauda")
+#A.nigricauda
+A.nigricauda <- subset_samples(ps.eamfish, Species == "A.nigricauda")
+A.nigricauda.trans <- transform_sample_counts(A.nigricauda, function(x) x/sum(x)*100)
 
 n <- length(sample_names(A.nigricauda.trans))
 flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(A.nigricauda.trans, flist)
 A.nigricauda_core <- prune_taxa(a, A.nigricauda.trans) 
 A.nigricauda_core.melt <- psmelt(A.nigricauda_core) %>%
- group_by(Species, Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-#A.olivaceus - 41 CORE
-A.olivaceus.trans <- subset_samples(ps.fish, Species == "A.olivaceus")
+#A.olivaceus
+A.olivaceus <- subset_samples(ps.eamfish, Species == "A.olivaceus")
+A.olivaceus.trans <- transform_sample_counts(A.olivaceus, function(x) x/sum(x)*100)
 
 n <- length(sample_names(A.olivaceus.trans))
 flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(A.olivaceus.trans, flist)
 A.olivaceus_core <- prune_taxa(a, A.olivaceus.trans) 
 A.olivaceus_core.melt <- psmelt(A.olivaceus_core) %>%
- group_by(Species, Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-#A.triostegus - 49 CORE
-A.triostegus.trans <- subset_samples(ps.fish, Species == "A.triostegus")
+#A.triostegus
+A.triostegus <- subset_samples(ps.eamfish, Species == "A.triostegus")
+A.triostegus.trans <- transform_sample_counts(A.triostegus, function(x) x/sum(x)*100)
 
 n <- length(sample_names(A.triostegus.trans))
 flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(A.triostegus.trans, flist)
 A.triostegus_core <- prune_taxa(a, A.triostegus.trans) 
 A.triostegus_core.melt <- psmelt(A.triostegus_core) %>%
- group_by(Species, Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-#A.blochii - 204 CORE
-A.blochii.trans <- subset_samples(ps.fish, Species == "A.blochii")
+#A.blochii
+A.blochii <- subset_samples(ps.eamfish, Species == "A.blochii")
+A.blochii.trans <- transform_sample_counts(A.blochii, function(x) x/sum(x)*100)
 
 n <- length(sample_names(A.blochii.trans))
 flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(A.blochii.trans, flist)
 A.blochii_core <- prune_taxa(a, A.blochii.trans) 
 A.blochii_core.melt <- psmelt(A.blochii_core) %>%
- group_by(Species, Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-#A.grammoptilus - 97 CORE
-A.grammoptilus.trans <- subset_samples(ps.fish, Species == "A.grammoptilus")
+#A.grammoptilus
+A.grammoptilus <- subset_samples(ps.eamfish, Species == "A.grammoptilus")
+A.grammoptilus.trans <- transform_sample_counts(A.grammoptilus, function(x) x/sum(x)*100)
 
 n <- length(sample_names(A.grammoptilus.trans))
 flist <- filterfun(kOverA(n, 0))
 a <- filter_taxa(A.grammoptilus.trans, flist)
 A.grammoptilus_core <- prune_taxa(a, A.grammoptilus.trans) 
 A.grammoptilus_core.melt <- psmelt(A.grammoptilus_core) %>%
- group_by(Species, Shifting, OTU, kingdom, phylum, class, order, family, genus) %>%
+ group_by(sample_Species, Shifting, OTU, Phylum, Class, Order, Family, Genus) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
@@ -1499,918 +1928,663 @@ core_100_species_otu <- rbind(A.dussumieri_core.melt, A.nigricans_core.melt, A.n
 ps.core <- merge_phyloseq(A.dussumieri_core, A.nigricans_core, A.nigricauda_core, A.olivaceus_core, A.triostegus_core, A.blochii_core, A.grammoptilus_core)
 ```
 
-DESeq2 CORE - Shifting
-WILL ONLY RUN IF PS.CORE IS UNTRANSFORMED - AS ABOVE CODE
+## Plot 100% OTU level fish species
 
 ```{r}
-# Use DESeq2 to test for differential abundance of Family-level assignments between Treatments (like t test, testing every OTU and in each treatment)
-
-library("DESeq2")
-library("forcats")
-library("tibble")
-library("dplyr")
-
-glom <- tax_glom(ps.core, taxrank = "genus")
-
-gm_mean = function(x, na.rm = TRUE){exp(sum(log(x[x > 0]), na.rm = na.rm) / length(x))}
-
-resultstax <- as.data.frame(tax_table(glom)@.Data)
-resultstax <- rownames_to_column(resultstax, var = "SampleID")
-
-alpha <- 0.05
-ps.core.shifting <- phyloseq_to_deseq2(glom, ~ Shifting)
-geoMeans <- apply(counts(ps.core.shifting), 1, gm_mean)
-estszef <- estimateSizeFactors(ps.core.shifting, geoMeans = geoMeans)
-dsq <- DESeq(estszef, fitType = "local")
-
-Shift.core <- results(dsq, cooksCutoff = FALSE, contrast = c("Shifting", "Non_shifting", "Range_shifting"), tidy = TRUE) %>%
-  filter(padj < alpha) %>%
-  left_join(., resultstax, by = c("row" = "SampleID")) %>%
-  mutate(test = "Non_Shifting v Range_Shifting")
-#write.csv(Shift.core, file = "differential abundance_Shifting_CORE.csv")
-
-library("drlib")
-
-# Plot 2 - This is black and white plot, family along side
-# error <- Shift.core$lfcSE # IF PLOTTING ERROR BARS
-
-ggplot(Shift.core, aes(x = log2FoldChange, y = forcats::fct_rev(factor(order)))) +
-  geom_point(size = 3) +
-  facet_grid(~ test) +
-  theme(aspect.ratio = 16/9) +
-  geom_vline(xintercept = 0)
-```
-
-# Figure S5: 
-## Nitrogen EAM
-```{r}
-# Colour select: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
-
-levels(eam.n2$Site)
-eam.n2 <- eam.n2 %>%
-  reorder_levels(Site, order = c("Lagoon_entrance_west", "Lagoon_entrance_east", "Keyhole", "Outer_Algae_Flats", "South_Algae_Flats"))
-levels(eam.n2$Site)
-
-eam.n2.summary <- eam.n2 %>%
-  group_by(Site, Location) %>%
-  get_summary_stats(Nitrogen, type = "mean_se")
-
-ggplot(eam.n2.summary, aes(x = Site, y = mean)) +
-    geom_bar(stat = "identity", aes(fill = Location)) +
-    geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.1, position = "identity") +
-    theme(aspect.ratio = 1, legend.position = "right") +
-    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-    guides(fill = guide_legend(ncol = 1)) +
-    scale_fill_manual(values = c("darkorange2", "dodgerblue4")) +
-    ylab("Nitrogen") +
-    xlab("Site") +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-```
-
-### Location
-```{r}
-eam.n2 <- read.table("EAM_cnratio_mapping.txt", sep = "\t", header = TRUE)
-
-eam.n2.summary <- eam.n2 %>%
-  group_by(Location) %>%
-  get_summary_stats(Nitrogen, type = "mean_se")
-
-ggboxplot(eam.n2, x = "Location", y = "Nitrogen")
-
-# Identify outliers
-eam.n2 %>% 
-  group_by(Location) %>%
-  identify_outliers(Nitrogen)
-
-# Check normality
-model  <- lm(Nitrogen ~ Location, data = eam.n2)
-ggqqplot(residuals(model))
-shapiro_test(residuals(model))
-
-# residuals versus fits plot can be used to check the homogeneity of variances or Levene's test
-eam.n2 %>% levene_test(Nitrogen ~ Location)
-
-# Kruskal - Location
-res.kruskal <- eam.n2 %>% 
-  kruskal_test(Nitrogen ~ Location)
-res.kruskal
-
-# Pairwise comparisons using Dunn's test:
-pwc <- eam.n2 %>% 
-  dunn_test(Nitrogen ~ Location, p.adjust.method = "bonferroni") 
-pwc
-
-# Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "Location")
-ggboxplot(eam.n2, x = "Location", y = "Nitrogen", color = "Location") +
-          stat_pvalue_manual(pwc, hide.ns = TRUE) +
-          labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
-          caption = get_pwc_label(pwc))
-```
-
-### Site
-```{r}
-# https://www.datanovia.com/en/lessons/anova-in-r/
-library(rstatix)
-library(ggpubr)
-
-eam.n2 <- read.table("EAM_cnratio_mapping.txt", sep = "\t", header = TRUE)
-
-eam.n2.summary <- eam.n2 %>%
-  group_by(Site) %>%
-  get_summary_stats(Nitrogen, type = "mean_se")
-
-ggboxplot(eam.n2, x = "Site", y = "Nitrogen")
-
-# Identify outliers
-eam.n2 %>% 
-  group_by(Site) %>%
-  identify_outliers(Nitrogen)
-
-# Check normality
-# Build the linear model
-model  <- lm(Nitrogen ~ Site, data = eam.n2)
-# Create a QQ plot of residuals
-ggqqplot(residuals(model))
-shapiro_test(residuals(model))
-
-#Check normality assumption by Site
-eam.n2 %>%
-  group_by(Site) %>%
-  shapiro_test(Nitrogen)
-ggqqplot(eam.n2, "Nitrogen", facet.by = "Site")
-
-# residuals versus fits plot can be used to check the homogeneity of variances or Levene's test
-plot(model, 1)
-eam.n2 %>% levene_test(Nitrogen ~ Site)
-
-# Kruskal - Site
-res.kruskal <- eam.n2 %>% 
-  kruskal_test(Nitrogen ~ Site)
-res.kruskal
-
-# Pairwise comparisons using Dunn's test:
-pwc <- eam.n2 %>% 
-  dunn_test(Nitrogen ~ Site, p.adjust.method = "bonferroni") 
-pwc
-
-# Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "Site")
-ggboxplot(eam.n2, x = "Site", y = "Nitrogen", color = "Site") +
-          #facet_wrap(~Site, ncol = 5) +
-          stat_pvalue_manual(pwc, hide.ns = TRUE) +
-          labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
-          caption = get_pwc_label(pwc))
-```
-
-### ADONIS (PERMANOVA) Nitrogen
-
-```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
-library(vegan)
-
-# Then, load the downloaded data into R:
-eam.n2 <- read.table("EAM_permanova_nitrogen.txt", sep = "\t", header = TRUE) #%>%
-
-# To set rownames for this data frame we do:
-rownames(eam.n2) <- eam.n2$SampleID
-eam.n2$SampleID <- NULL # Then we remove the redundant column in the dataframe
-eam.n2 <- as.matrix(eam.n2)
-
-sampledf <- data.frame(sample_data(sampledata)) %>%
-  filter(SampleID %in% rownames(eam.n2))
-rownames(sampledf) <- sampledf$SampleID
-sampledf$SampleID <- NULL
-
-# As our data are basically abundance-based data, we have to calculate Bray-Curtis distances between samples instead of Euclidean distances. So:
-dis <- vegdist(eam.n2, method = "euclidean")
-
-adonis(dis ~ Nitrogen * Site, data = sampledf, permutations = 999)
-adonis(dis ~ Nitrogen * Location, data = sampledf, permutations = 999)
-
-# Constrain permutations to be nested within each Location to detect differences in Site specific to each Location (site nested within location).
-adonis2(dis ~ Nitrogen * Location/Site, data = sampledf, strata = sampledf$Location)
-
-# PERMDISP (betadisper)
-# Location
-beta.location <- betadisper(dis, sampledf$Location)
-
-anova(beta.location)
-beta.HSD <- TukeyHSD(beta.location)
-plot(beta.HSD)
-
-plot(beta.location)
-permutest(beta.location, pairwise = TRUE, permutations = 999)
-
-# Site
-beta.site <- betadisper(dis, sampledf$Site)
-
-anova(beta.site)
-beta.HSD <- TukeyHSD(beta.site)
-plot(beta.HSD)
-
-plot(beta.site)
-permutest(beta.site, pairwise = TRUE, permutations = 999)
-```
-
-## C:N Ratio EAM
-
-```{r}
-# Colour select: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
-eam.cn <- read.table("EAM_cnratio_mapping.txt", sep = "\t", header = TRUE)
-
-levels(eam.cn$Site)
-eam.cn <- eam.cn %>%
-  reorder_levels(Site, order = c("Lagoon_entrance_west", "Lagoon_entrance_east", "Keyhole", "Outer_Algae_Flats", "South_Algae_Flats"))
-levels(eam.cn$Site)
-
-eam.cn.summary <- eam.cn %>%
-  group_by(Site, Location) %>%
-  get_summary_stats(CNRatio, type = "mean_se")
-
-ggplot(eam.cn.summary, aes(x = Site, y = mean)) +
-    geom_bar(stat = "identity", aes(fill = Location)) +
-    geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.1, position = "identity") +
-    theme(aspect.ratio = 1, legend.position = "right") +
-    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-    guides(fill = guide_legend(ncol = 1)) +
-    scale_fill_manual(values = c("darkorange2", "dodgerblue4")) +
-    ylab("C:N Ratio") +
-    xlab("Site") +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-```
-
-### Location
-
-```{r}
-eam.cn <- read.table("EAM_cnratio_mapping.txt", sep = "\t", header = TRUE)
-
-eam.cn.summary <- eam.cn %>%
-  group_by(Location) %>%
-  get_summary_stats(CNRatio, type = "mean_se")
-
-ggboxplot(eam.cn, x = "Location", y = "CNRatio")
-
-# Identify outliers
-eam.cn %>% 
-  group_by(Location) %>%
-  identify_outliers(CNRatio) # There were no extreme outliers
-
-# Check normality
-model  <- lm(CNRatio ~ Location, data = eam.cn)
-ggqqplot(residuals(model))
-shapiro_test(residuals(model))
-
-eam.cn %>% levene_test(CNRatio ~ Location)
-
-# ANOVA
-res.aov <- eam.cn %>% anova_test(CNRatio ~ Location)
-
-# Pairwise comparisons - tukeys
-pwc <- eam.cn %>% tukey_hsd(CNRatio ~ Location)
-
-# Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "Location")
-ggboxplot(eam.cn, x = "Location", y = "CNRatio", color = "Location") +
-  stat_pvalue_manual(pwc, hide.ns = TRUE) +
-  labs(
-    subtitle = get_test_label(res.aov, detailed = TRUE),
-    caption = get_pwc_label(pwc)
-    ) +
-  ylab("C:N Ratio") + xlab ("Location")
-```
-
-### Site
-
-```{r}
-# https://www.datanovia.com/en/lessons/anova-in-r/
-library(rstatix)
-library(ggpubr)
-
-eam.cn <- read.table("EAM_cnratio_mapping.txt", sep = "\t", header = TRUE)
-
-eam.cn.summary <- eam.cn %>%
-  group_by(Site) %>%
-  get_summary_stats(CNRatio, type = "mean_se")
-
-ggboxplot(eam.cn, x = "Site", y = "CNRatio")
-
-# Identify outliers
-eam.cn %>% 
-  group_by(Site) %>%
-  identify_outliers(CNRatio)
-
-# Check normality
-model  <- lm(CNRatio ~ Site, data = eam.cn)
-# Create a QQ plot of residuals
-ggqqplot(residuals(model))
-shapiro_test(residuals(model))
-
-#Check normality assumption by Site
-eam.cn %>%
-  group_by(Site) %>%
-  shapiro_test(CNRatio)
-ggqqplot(eam.cn, "CNRatio", facet.by = "Site")
-
-plot(model, 1)
-eam.cn %>% levene_test(CNRatio ~ Site)
-
-# ANOVA
-res.aov <- eam.cn %>% anova_test(CNRatio ~ Site)
-res.aov 
-
-# Pairwise comparisons - tukeys
-pwc <- eam.cn %>% tukey_hsd(CNRatio ~ Site)
-pwc
-
-# Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "Site")
-ggboxplot(eam.cn, x = "Site", y = "CNRatio", color = "Site") +
-  stat_pvalue_manual(pwc, hide.ns = TRUE) +
-  labs(
-    subtitle = get_test_label(res.aov, detailed = TRUE),
-    caption = get_pwc_label(pwc)
-    ) +
-  ylab("C:N Ratio") + xlab ("Site")
-```
-
-### ADONIS (PERMANOVA) CN Ratio
-
-```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
-library(vegan)
-
-# Then, load the downloaded data into R:
-eam.cn <- read.table("EAM_permanova_cnratio.txt", sep = "\t", header = TRUE) #%>%
-
-# To set rownames for this data frame we do:
-rownames(eam.cn) <- eam.cn$SampleID
-eam.cn$SampleID <- NULL # Then we remove the redundant column in the dataframe
-eam.cn <- as.matrix(eam.cn)
-
-sampledf <- data.frame(sample_data(sampledata)) %>%
-  filter(SampleID %in% rownames(eam.cn))
-rownames(sampledf) <- sampledf$SampleID
-sampledf$SampleID <- NULL
-
-# As our data are basically abundance-based data, we have to calculate Bray-Curtis distances between samples instead of Euclidean distances. So:
-dis <- vegdist(eam.cn, method = "bray")
-
-adonis(dis ~ CNRatio * Site, data = sampledf, permutations = 999)
-adonis(dis ~ CNRatio * Location, data = sampledf, permutations = 999)
-# Constrain permutations to be nested within each Location to detect differences in Site specific to each Location (site nested within location).
-adonis2(dis ~ CNRatio * Location/Site, data = sampledf, strata = sampledf$Location)
-
-# PERMDISP (betadisper)
-# Location
-beta.location <- betadisper(dis, sampledf$Location)
-
-anova(beta.location)
-beta.HSD <- TukeyHSD(beta.location)
-plot(beta.HSD)
-
-plot(beta.location)
-permutest(beta.location, pairwise = TRUE, permutations = 999)
-
-# Site
-beta.site <- betadisper(dis, sampledf$Site)
-
-anova(beta.site)
-beta.HSD <- TukeyHSD(beta.site)
-plot(beta.HSD)
-
-plot(beta.site)
-permutest(beta.site, pairwise = TRUE, permutations = 999)
-```
-
-# Figure S6: Fish Stomach Content 
-## PLOT
-```{r}
-library(rstatix)
-library(ggpubr)
-
-fish.content <- read.table("Fish_stomachcontent_SG.txt", sep = "\t", header = TRUE)
-
-# Summary statistics table
-fish.content.summary <- fish.content %>%
-  group_by(StomachContent, Species) %>% 
-  get_summary_stats(Content, type = "full") %>%
-  mutate(mean_p_se = mean + se, mean_m_se = mean - se)
-
-ggplot(fish.content.summary, aes(x = Species, y = mean)) +
-    geom_bar(stat = "identity", aes(fill = StomachContent), position = "stack") +
-    facet_grid(~Species, scales = "free_x") +
-    theme(aspect.ratio = 1, legend.position = "right") +
-    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-    guides(fill = guide_legend(ncol = 1)) +
-    ylab("Content (%)") +
-    xlab("Species") +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-
-ggplot(fish.content.summary, aes(x = StomachContent, y = mean)) +
-    geom_bar(stat = "identity", aes(fill = StomachContent)) +
-    geom_errorbar(aes(ymin = mean_m_se, ymax = mean_p_se), width = 0.1, position = "identity") +
-    facet_grid(~Species, scales = "free_x") +
-    theme(aspect.ratio = 1, legend.position = "right") +
-    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
-    guides(fill = guide_legend(ncol = 1)) +
-    ylab("Content (%)") +
-    xlab("Species") +
-    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-```
-
-## STATS
-### StomachContent
-```{r}
-# https://www.datanovia.com/en/lessons/anova-in-r/
-library(rstatix)
-library(ggpubr)
-
-fish.content <- read.table("Fish_stomachcontent_SG.txt", sep = "\t", header = TRUE)
-
-# Summary statistics table
-fish.content.summary <- fish.content %>%
-  group_by(StomachContent) %>%
-  get_summary_stats(Content, type = "mean_se")
-
-ggboxplot(fish.content, x = "StomachContent", y = "Content", color = "StomachContent", palette = "jco", facet.by = "Species", nrow = 2)
-
-# Identify outliers
-fish.content %>% 
-  group_by(StomachContent) %>%
-  identify_outliers(Content)
-
-# Check normality and homogeneity of variances
-model  <- lm(Content ~ StomachContent, data = fish.content)
-ggqqplot(residuals(model))
-shapiro_test(residuals(model))
-
-# homogeneity of variances or Levene's test
-fish.content %>% levene_test(Content ~ StomachContent) 
-
-# Kruskal - STOMACHCONTENT
-res.kruskal <- fish.content %>% 
-  kruskal_test(Content ~ StomachContent)
-res.kruskal
-
-# Pairwise comparisons using Dunn's test:
-pwc <- fish.content %>% 
-  dunn_test(Content ~ StomachContent, p.adjust.method = "bonferroni") 
-pwc
-
-# Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "Species")
-ggboxplot(fish.content, x = "StomachContent", y = "Content", 
-          color = "StomachContent", palette = c("forestgreen", "tomato3", "dodgerblue4", "grey70")) +
-          #facet_wrap(~Site, ncol = 5) +
-          stat_pvalue_manual(pwc, hide.ns = TRUE) +
-          labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
-          caption = get_pwc_label(pwc))
-```
-
-### Shifting mode
-```{r}
-# https://www.datanovia.com/en/lessons/anova-in-r/
-library(rstatix)
-library(ggpubr)
-
-fish.content <- read.table("Fish_stomachcontent_SG.txt", sep = "\t", header = TRUE)
-
-# Summary statistics table
-fish.content.summary <- fish.content %>%
-  group_by(Shifting) %>%
-  get_summary_stats(Content, type = "mean_se")
-
-ggboxplot(fish.content, x = "Shifting", y = "Content", color = "Shifting", palette = "jco", facet.by = "Species", nrow = 2)
-
-# Identify outliers
-fish.content %>% 
-  group_by(Shifting) %>%
-  identify_outliers(Content)
-
-# Check normality and homogeneity of variances
-model  <- lm(Content ~ Shifting, data = fish.content)
-ggqqplot(residuals(model))
-# Shapiro-Wilk test of normality
-shapiro_test(residuals(model))
-# homogeneity of variances or Levene's test
-fish.content %>% levene_test(Content ~ Shifting) 
-
-# Kruskal - STOMACHCONTENT
-res.kruskal <- fish.content %>% 
-  kruskal_test(Content ~ Shifting)
-res.kruskal
-
-# Pairwise comparisons using Dunn's test:
-pwc <- fish.content %>% 
-  dunn_test(Content ~ Shifting, p.adjust.method = "bonferroni") 
-pwc
-
-# Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "Species")
-ggboxplot(fish.content, x = "Shifting", y = "Content", 
-          color = "Shifting", palette = c("green4", "tomato1")) +
-          #facet_wrap(~Site, ncol = 5) +
-          stat_pvalue_manual(pwc, hide.ns = TRUE) +
-          labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
-          caption = get_pwc_label(pwc))
-
-pwc <- pwc %>% add_xy_position(x = "Species")
-ggboxplot(fish.content, x = "Shifting", y = "Content", 
-          color = "Species") +
-          #facet_wrap(~Site, ncol = 5) +
-          stat_pvalue_manual(pwc, hide.ns = TRUE) +
-          labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
-          caption = get_pwc_label(pwc))
-```
-
-### Species
-```{r}
-# https://www.datanovia.com/en/lessons/anova-in-r/
-library(rstatix)
-library(ggpubr)
-
-fish.content <- read.table("Fish_stomachcontent_SG.txt", sep = "\t", header = TRUE)
-
-# Summary statistics table
-fish.content.summary <- fish.content %>%
-  group_by(Species) %>%
-  get_summary_stats(Content, type = "mean_se")
-
-ggboxplot(fish.content, x = "Species", y = "Content", color = "Species", palette = "jco", facet.by = "Species", nrow = 2)
-
-# Identify outliers
-fish.content %>% 
-  group_by(Species) %>%
-  identify_outliers(Content)
-
-model  <- lm(Content ~ Species, data = fish.content)
-ggqqplot(residuals(model))
-shapiro_test(residuals(model))
-
-# homogeneity of variances or Levene's test
-fish.content %>% levene_test(Content ~ Species) 
-
-# Kruskal
-res.kruskal <- fish.content %>% 
-  kruskal_test(Content ~ Species)
-res.kruskal
-
-# Pairwise comparisons using Dunn's test:
-pwc <- fish.content %>% 
-  dunn_test(Content ~ Species, p.adjust.method = "bonferroni") 
-pwc
-
-# Visualization: box plots with p-values
-pwc <- pwc %>% add_xy_position(x = "Species")
-ggboxplot(fish.content, x = "Species", y = "Content", 
-          color = "Species", palette = c("green4", "tomato1")) +
-          stat_pvalue_manual(pwc, hide.ns = TRUE) +
-          labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
-          caption = get_pwc_label(pwc))
-
-pwc <- pwc %>% add_xy_position(x = "Species")
-ggboxplot(fish.content, x = "Species", y = "Content", 
-          color = "Species") +
-          stat_pvalue_manual(pwc, hide.ns = TRUE) +
-          labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
-          caption = get_pwc_label(pwc))
-```
-
-## ADONIS (PERMANOVA) fish stomach content
-
-```{r echo=TRUE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
-library(vegan)
-
-# Then, load the downloaded data into R:
-fish.content <- read.table("Fish_permanova_stomachcontent2.txt", sep = "\t", header = TRUE) %>%
-  mutate(sum = Algae + Detritus + Animalmatter + Other) %>%
-  filter(sum != 0.00) %>%
-  select(-sum)
-
-# To set rownames for this data frame we do:
-rownames(fish.content) <- fish.content$SampleID
-fish.content$SampleID <- NULL
-fish.content <- as.matrix(fish.content)
-
-sampledf <- data.frame(sample_data(sampledata)) %>%
-  filter(SampleID %in% rownames(fish.content))
-rownames(sampledf) <- sampledf$SampleID
-sampledf$SampleID <- NULL
-
-dis <- vegdist(fish.content, method = "euclidean")
-
-adonis(dis ~ Algae * Species, data = sampledf, permutations = 999)
-adonis(dis ~ Algae * Location, data = sampledf, permutations = 999)
-
-# Constrain permutations to be nested within each Location to detect differences in Site specific to each Location (site nested within location).
-adonis2(dis ~ Algae * Species + Location/Site, data = sampledf, strata = sampledf$Location)
-adonis2(dis ~ Detritus * Species + Location/Site, data = sampledf, strata = sampledf$Location)
-adonis2(dis ~ Animalmatter * Species + Location/Site, data = sampledf, strata = sampledf$Location)
-adonis2(dis ~ Other * Species + Location/Site, data = sampledf, strata = sampledf$Location)
-
-# Constrain permutations to be nested (Species nested within shifting).
-adonis2(dis ~ Algae * Shifting/Species, data = sampledf, strata = sampledf$Shifting)
-adonis2(dis ~ Detritus * Shifting/Species, data = sampledf, strata = sampledf$Shifting)
-adonis2(dis ~ Animalmatter * Shifting/Species, data = sampledf, strata = sampledf$Shifting)
-adonis2(dis ~ Other * Shifting/Species, data = sampledf, strata = sampledf$Shifting)
-
-# PERMDISP (betadisper)
-# Shifting
-beta.shifting <- betadisper(dis, sampledf$Shifting)
-anova(beta.shifting) # not SIG - dispersions are homogenous
-beta.HSD <- TukeyHSD(beta.shifting)
-plot(beta.HSD)
-
-plot(beta.shifting)
-permutest(beta.shifting, pairwise = TRUE, permutations = 999)
-
-# Species
-beta.species <- betadisper(dis, sampledf$Species)
-anova(beta.species) 
-beta.HSD <- TukeyHSD(beta.species)
-plot(beta.HSD)
-
-plot(beta.species)
-permutest(beta.species, pairwise = TRUE, permutations = 999)
-
-# PERMDISP (betadisper)
-# Location
-beta.location <- betadisper(dis, sampledf$Location)
-anova(beta.location)
-beta.HSD <- TukeyHSD(beta.location)
-plot(beta.HSD)
-
-plot(beta.location)
-permutest(beta.location, pairwise = TRUE, permutations = 999)
-```
-
-# Fig. 5: EAM Core
-## EAM
-
-```{r}
-glom <- tax_glom(ps.eam, taxrank = "genus")
-trans.f.glom <- transform_sample_counts(glom, function(x) x/sum(x)*100)
-
-n <- length(sample_names(trans.f.glom))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(trans.f.glom, flist)
-all_core.glom <- prune_taxa(a, trans.f.glom)
-alleam_core.melt <- psmelt(all_core.glom) %>%
- group_by(OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-#write.csv(x = alleam_core.melt, file = "core_100_site_genus_eam_venns.csv")
-
-# Plot
-ggplot(alleam_core.melt, aes(x = Site, y = Average_rel)) +
-    geom_bar(stat = "identity", aes(fill = class), position = "stack") + 
-    scale_fill_d3(palette = "category20") +
+ggplot(core_100_species_otu, aes(x = Species, y = Average_rel)) +
+    geom_bar(stat = "identity", aes(fill = family), position = "stack") + 
+    facet_grid(~Shifting, scales = "free_x") +
+    #scale_y_continuous(labels = scales::percent) +
     theme(aspect.ratio = 1, legend.position = "bottom") +
     guides(fill = guide_legend(ncol = 3)) +
     ylab("Relative Abundance (%)") +
-    scale_x_discrete(limits = c("Outer_Algae_Flats", "Keyhole", "Lagoon_entrance_west", "Lagoon_entrance_east", "South_Algae_Flats")) +
+    scale_x_discrete(limits = c("A.triostegus", "A.nigricans", "A.blochii", "A.nigricauda", "A.grammoptilus", "A.olivaceus", "A.dussumieri")) +
     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+trans <- transform_sample_counts(ps.coreHG, function(x) x/sum(x)*100)
+
+glom <- tax_glom(trans, taxrank = "order")
+
+long <- psmelt(glom) %>%
+  group_by(Species, OTU, Replicate, phylum, class, order) %>%
+  summarise(Average_rel = sum(Abundance/n()))
+
+ggplot(long, aes(x = Replicate, y = Average_rel)) +
+    geom_bar(stat = "identity", aes(fill = order), position = "fill") + 
+    facet_wrap(~Species, scales = "free_x", nrow = 1) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_fill_d3(palette = "category20") + 
+    theme(aspect.ratio = 1, legend.position = "bottom", axis.text.x = element_blank()) +
+    guides(fill = guide_legend(ncol = 4)) +
+    ylab("Relative Abundance (%)")
+
 ```
 
-## Site
-
-100% GENUS
-
-Add Location to Group_by to facet plot by location
-
+# SHARED CORE GENUS VENNS
+## Eam vs Fish (core GENUS)
 ```{r}
-glom <- tax_glom(ps.eam, taxrank = "genus")
+library(ggvenn)
 
-# Lagoon_entrance_west - 274 CORE
-LagoonW <- subset_samples(glom, Site == "Lagoon_entrance_west")
-LagoonW.trans <- transform_sample_counts(LagoonW, function(x) x/sum(x)*100)
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing WATER samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
 
-n <- length(sample_names(LagoonW.trans))
+glom <- tax_glom(ps.eamfish, taxrank = "Genus")
+
+# Fish
+Fish <- subset_samples(glom, Sample_Type == "Fish")
+Fish.trans <- transform_sample_counts(Fish, function(x) x/sum(x)*100)
+
+n <- length(sample_names(Fish.trans))
 flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(LagoonW.trans, flist)
-LagoonW_core <- prune_taxa(a, LagoonW.trans) 
-LagoonW_core.melt <- psmelt(LagoonW_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
+a <- filter_taxa(Fish.trans, flist)
+Fish_core <- prune_taxa(a, Fish.trans) 
+Fish_core.melt <- psmelt(Fish_core) %>%
+ group_by(Sample_Type, Phylum, Class, Order, Family, Genus, OTU) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-# Lagoon_entrance_east - 233 CORE
-LagoonE <- subset_samples(glom, Site == "Lagoon_entrance_east")
-LagoonE.trans <- transform_sample_counts(LagoonE, function(x) x/sum(x)*100)
+# EAM
+EAM <- subset_samples(glom, Sample_Type == "EAM")
+EAM.trans <- transform_sample_counts(EAM, function(x) x/sum(x)*100)
 
-n <- length(sample_names(LagoonE.trans))
+n <- length(sample_names(EAM.trans))
 flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(LagoonE.trans, flist)
-LagoonE_core <- prune_taxa(a, LagoonE.trans) 
-LagoonE_core.melt <- psmelt(LagoonE_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-# South_Algae_Flats - 181 CORE
-SAFlats <- subset_samples(glom, Site == "South_Algae_Flats")
-SAFlats.trans <- transform_sample_counts(SAFlats, function(x) x/sum(x)*100)
-
-n <- length(sample_names(SAFlats.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(SAFlats.trans, flist)
-SAFlats_core <- prune_taxa(a, SAFlats.trans) 
-SAFlats_core.melt <- psmelt(SAFlats_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-# Outer_Algae_Flats - 205 CORE
-OAFlats <- subset_samples(glom, Site == "Outer_Algae_Flats")
-OAFlats.trans <- transform_sample_counts(OAFlats, function(x) x/sum(x)*100)
-
-n <- length(sample_names(OAFlats.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(OAFlats.trans, flist)
-OAFlats_core <- prune_taxa(a, OAFlats.trans) 
-OAFlats_core.melt <- psmelt(OAFlats_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-# Keyhole - 184 CORE
-Keyhole <- subset_samples(glom, Site == "Keyhole")
-Keyhole.trans <- transform_sample_counts(Keyhole, function(x) x/sum(x)*100)
-
-n <- length(sample_names(Keyhole.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(Keyhole.trans, flist)
-Keyhole_core <- prune_taxa(a, Keyhole.trans) 
-Keyhole_core.melt <- psmelt(Keyhole_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
+a <- filter_taxa(EAM.trans, flist)
+EAM_core <- prune_taxa(a, EAM.trans) 
+EAM_core.melt <- psmelt(EAM_core) %>%
+ group_by(Sample_Type, Phylum, Class, Order, Family, Genus, OTU) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
 # Plot
-core_100_site_genus_eam <- rbind(LagoonW_core.melt, LagoonE_core.melt, Keyhole_core.melt, OAFlats_core.melt, SAFlats_core.melt)
+core_100_SampleType_genus <- rbind(Fish_core.melt, EAM_core.melt)
 
-#write.csv(x = core_100_site_genus_eam, file = "core_100_site_genus_eam.csv")
+# Filter for OTUs with measurable abundance
+present_otus <- core_100_SampleType_genus %>%
+  filter(Average_rel > 0)
+
+# Build Venn input
+venn_list <- present_otus %>%
+  group_by(Sample_Type) %>%
+  summarise(otus = list(unique(OTU))) %>%
+  deframe()
+
+### PER SAMPLE TYPE
+paired_type <- c("#33A02C",  "mediumpurple1")
+
+venn_type <- present_otus %>%
+  group_by(Sample_Type) %>%
+  summarise(OTUs = list(unique(OTU)), .groups = "drop") %>%
+  deframe()
+
+p_type <- ggvenn(
+  venn_type,
+  fill_color = paired_type,
+  stroke_size = 0.5,
+  set_name_size = 11,
+  text_size = 11,
+  show_percentage = TRUE
+) + ggtitle("Shared core genera between EAM & fish")
+
+```
+## EAM vs Fish - GENUS (Sorensen)
+```{r}
+ps <- readRDS("ps2026.rds")
+
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing WATER samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
+
+glom <- tax_glom(ps.eamfish, taxrank = "Genus")
+
+library(phyloseq)
+library(vegan)
+
+# Ensure OTU table has taxa as rows
+otu_mat <- as(otu_table(glom), "matrix")
+if (!taxa_are_rows(glom)) {
+  otu_mat <- t(otu_mat)
+}
+
+# Convert to presence/absence
+otu_pa <- (otu_mat > 0) * 1
+
+# Update phyloseq object
+otu_table(glom) <- otu_table(otu_pa, taxa_are_rows = TRUE)
+ps_pa <- glom
+
+# Compute similarity matrices
+jaccard_sim <- 1 - as.matrix(vegdist(t(otu_pa), method = "jaccard", binary = TRUE))
+sorensen_sim <- 1 - as.matrix(vegdist(t(otu_pa), method = "bray", binary = TRUE))
+
+# Optional: inspect matrices
+head(jaccard_sim)
+head(sorensen_sim)
+
+# Extract group information
+sample_groups <- sample_data(ps_pa)$Sample_Type  # replace 'Group' with your variable
+sample_ids <- rownames(sample_data(ps_pa))
+
+# Function to compute average similarity between two groups
+average_similarity <- function(sim_matrix, groups, group1, group2) {
+  idx1 <- which(groups == group1)
+  idx2 <- which(groups == group2)
+  sim_values <- sim_matrix[idx1, idx2]
+  mean(sim_values)
+}
+
+# Example: compute average similarity between 'EAM' and 'Gut'
+avg_jaccard_EAM_Gut <- average_similarity(jaccard_sim, sample_groups, "EAM", "Fish")
+avg_sorensen_EAM_Gut <- average_similarity(sorensen_sim, sample_groups, "EAM", "Fish")
+
+library(phyloseq)
+library(ggplot2)
+library(reshape2)
+
+# Compute pairwise Jaccard similarities (as before)
+# shared_matrix is already computed
+ps_eam <- subset_samples(glom, Sample_Type == "EAM")
+ps_gut <- subset_samples(glom, Sample_Type == "Fish")
+
+# Convert OTU tables to presence/absence
+otu_eam <- as(otu_table(ps_eam), "matrix") > 0
+otu_gut <- as(otu_table(ps_gut), "matrix") > 0
+
+# Initialize matrices
+jaccard_matrix <- matrix(NA, nrow = ncol(otu_eam), ncol = ncol(otu_gut))
+sorensen_matrix <- matrix(NA, nrow = ncol(otu_eam), ncol = ncol(otu_gut))
+rownames(jaccard_matrix) <- colnames(otu_eam)
+colnames(jaccard_matrix) <- colnames(otu_gut)
+rownames(sorensen_matrix) <- colnames(otu_eam)
+colnames(sorensen_matrix) <- colnames(otu_gut)
+
+# Compute pairwise similarities
+for(i in 1:ncol(otu_eam)){
+  for(j in 1:ncol(otu_gut)){
+    a <- sum(otu_eam[,i] & otu_gut[,j])          # shared taxa
+    b <- sum(otu_eam[,i] | otu_gut[,j])          # union
+    jaccard_matrix[i,j] <- a / b                 # Jaccard
+    sorensen_matrix[i,j] <- 2 * a / (sum(otu_eam[,i]) + sum(otu_gut[,j]))  # Sørensen
+  }
+}
+
+# Average similarities
+avg_jaccard <- mean(jaccard_matrix)
+avg_sorensen <- mean(sorensen_matrix)
+cat("Average Jaccard similarity (EAM vs Gut):", avg_jaccard, "\n")
+cat("Average Sørensen similarity (EAM vs Gut):", avg_sorensen, "\n")
+
+# Prepare for plotting (long format)
+jaccard_long <- melt(jaccard_matrix, varnames = c("EAM", "Fish"), value.name = "Similarity")
+sorensen_long <- melt(sorensen_matrix, varnames = c("EAM", "Fish"), value.name = "Similarity")
+
+# Create a simple data frame
+avg_similarity <- data.frame(
+  Metric = c("Jaccard", "Sørensen"),
+  Similarity = c(0.398715, 0.5541544))
+
+# Bar plot
+ggplot(avg_similarity, aes(x = Metric, y = Similarity, fill = Metric)) +
+  geom_col(width = 0.5) +
+  scale_fill_manual(values = c("Jaccard" = "skyblue", "Sørensen" = "orange")) +
+  ylim(0, 1) +
+  theme_minimal() +
+  labs(title = "Average Shared Taxa Similarity between EAM and Fish",
+       y = "Average Similarity", x = "") +
+  geom_text(aes(label = round(Similarity, 3)), vjust = -0.5) #showing the average similarity between the two groups, and the numeric values displayed above the bars.
+```
+
+### Plot venns
+```{r}
+library(ggvenn)
+
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing WATER samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
+
+glom <- tax_glom(ps.eamfish, taxrank = "Genus")
+
+# Fish
+Fish <- subset_samples(glom, Sample_Type == "Fish")
+Fish.trans <- transform_sample_counts(Fish, function(x) x/sum(x)*100)
+ 
+Fish_core.melt <- psmelt(Fish.trans) %>%
+ group_by(Sample_Type, Phylum, Class, Order, Family, Genus, OTU) %>%
+  summarise(Average_rel = mean(Abundance),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+n_fish <- nsamples(Fish)
+fish_core <- filter_taxa(Fish, filterfun(kOverA(ceiling(0.4 * n_fish), 0)), prune = TRUE)
+
+fish_core_otus <- taxa_names(fish_core)
+
+# EAM
+EAM <- subset_samples(glom, Sample_Type == "EAM")
+EAM.trans <- transform_sample_counts(EAM, function(x) x/sum(x)*100)
+
+EAM_core.melt <- psmelt(EAM.trans) %>%
+ group_by(Sample_Type, Phylum, Class, Order, Family, Genus, OTU) %>%
+  summarise(Average_rel = mean(Abundance),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+n_eam  <- nsamples(EAM)
+eam_core <- filter_taxa(EAM, filterfun(kOverA(ceiling(0.4 * n_eam), 0)), prune = TRUE)
+
+eam_core_otus <- taxa_names(eam_core)
+
+venn_type <- list(
+  Fish = fish_core_otus,
+  EAM  = eam_core_otus)
+
+
+### PER SAMPLE TYPE
+paired_type <- c("#33A02C",  "mediumpurple1")
+
+p_type <- ggvenn(venn_type,  fill_color = paired_type, stroke_size = 0.5, set_name_size = 11,  text_size = 11, show_percentage = TRUE) + ggtitle("Shared ASVs between EAM & fish (>40% prevalence)")
+p_type
+```
+
+
+## EAM & Shifting
+```{r}
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing WATER samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
+
+glom <- tax_glom(ps.eamfish, taxrank = "Genus")
+
+# Shifting
+shifting <- subset_samples(glom, Shifting == "Range_shifting")
+shifting.trans <- transform_sample_counts(shifting, function(x) x/sum(x)*100)
+
+n <- length(sample_names(shifting.trans))
+flist <- filterfun(kOverA(n, 0))
+a <- filter_taxa(shifting.trans, flist)
+shifting_core <- prune_taxa(a, shifting.trans) 
+shifting_core.melt <- psmelt(shifting_core) %>%
+ group_by(Shifting, Phylum, Class, Order, Family, Genus, OTU) %>%
+  summarise(Average_rel = mean(Abundance),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+# EAM
+EAM <- subset_samples(glom, Shifting == "EAM")
+EAM.trans <- transform_sample_counts(EAM, function(x) x/sum(x)*100)
+
+n <- length(sample_names(EAM.trans))
+flist <- filterfun(kOverA(n, 0))
+a <- filter_taxa(EAM.trans, flist)
+eam_core <- prune_taxa(a, EAM.trans) 
+eam_core.melt <- psmelt(eam_core) %>%
+ group_by(Shifting, Phylum, Class, Order, Family, Genus, OTU) %>%
+  summarise(Average_rel = mean(Abundance),
+            SE_rel = sd(Abundance)/sqrt(n()))
+
+# Plot
+core_100_eamshifting_genus <- rbind(shifting_core.melt, eam_core.melt)
 
 library(RColorBrewer)
-#display.brewer.all()
-colourCount = length(unique(core_100_site_genus_eam$class))
-getPalette = colorRampPalette(brewer.pal(22, "Dark2"))
- 
-ggplot(core_100_site_genus_eam, aes(x = Site, y = Average_rel)) +
-    geom_bar(stat = "identity", aes(fill = class), position = "stack") +
+colourCount = length(unique(core_100_eamshifting_genus$Class))
+getPalette = colorRampPalette(brewer.pal(7, "Paired")) # Spectral is a good one too
+
+ggplot(core_100_eamshifting_genus, aes(x = Shifting, y = Average_rel)) +
+    geom_bar(stat = "identity", aes(fill = Class), position = "stack") +
     scale_fill_manual(values = getPalette(colourCount)) +
     theme(aspect.ratio = 1, legend.position = "bottom") +
     guides(fill = guide_legend(ncol = 3)) +
     ylab("Relative Abundance (%)") +
-    scale_x_discrete(limits = c("Lagoon_entrance_east", "Lagoon_entrance_west", "Outer_Algae_Flats", "South_Algae_Flats", "Keyhole")) +
     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 ```
-
-### ps.core.eam for ADONIS
-100% OTU
-
+### Venns
 ```{r}
-# Lagoon_entrance_west - 1269 CORE
-LagoonW <- subset_samples(ps.eam, Site == "Lagoon_entrance_west")
-LagoonW.trans <- transform_sample_counts(LagoonW, function(x) x/sum(x)*100)
+library(ggvenn)
 
-n <- length(sample_names(LagoonW.trans))
+# Filter for OTUs with measurable abundance
+present_otus <- core_100_eamshifting_genus %>%
+  filter(Average_rel > 0)
+
+# Build Venn input
+venn_list <- present_otus %>%
+  group_by(Shifting) %>%
+  summarise(otus = list(unique(OTU))) %>%
+  deframe()
+
+paired_shift <- c(
+  "#33A02C",  # red
+  "#E31A1C"   # orange
+)
+
+venn_rangeshift <- present_otus %>%
+  #filter(Shifting != "Non_shifting") %>%
+  group_by(Shifting) %>%
+  summarise(OTUs = list(unique(OTU)), .groups = "drop") %>%
+  deframe()
+
+p_eamrangeshift <- ggvenn(
+  venn_rangeshift,
+  fill_color = paired_shift,
+  stroke_size = 0.5,
+  set_name_size = 11,
+  text_size = 11,
+  show_percentage = TRUE
+) +
+  ggtitle("Shared core ASVs between EAM & range-expanding fish")
+
+ggarrange(p_eamnonshift, p_eamrangeshift,
+                    labels = c("a)", "b)"),
+                    font.label = list(size = 10, colour = "black", face = "plain"),
+                    ncol = 2, nrow = 1) + theme(aspect.ratio = 0.5)
+```
+
+## EAM & Non-Shifting
+```{r}
+ps.eamfish <- subset_samples(ps, Sample_Type != "Water") # Removing WATER samples
+ps.eamfish <- prune_taxa(taxa_sums(ps.eamfish) > 1, ps.eamfish)
+
+glom <- tax_glom(ps.eamfish, taxrank = "Genus")
+
+# Non Shifting
+Nonshifting <- subset_samples(glom, Shifting == "Non_shifting")
+Nonshifting.trans <- transform_sample_counts(Nonshifting, function(x) x/sum(x)*100)
+
+n <- length(sample_names(Nonshifting.trans))
 flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(LagoonW.trans, flist)
-LagoonW_core <- prune_taxa(a, LagoonW.trans) 
-LagoonW_core.melt <- psmelt(LagoonW_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
+a <- filter_taxa(Nonshifting.trans, flist)
+Nonshifting_core <- prune_taxa(a, Nonshifting.trans) 
+Nonshifting_core.melt <- psmelt(Nonshifting_core) %>%
+ group_by(Shifting, Phylum, Class, Order, Family, Genus, OTU) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
-# Lagoon_entrance_east - 1260 CORE
-LagoonE <- subset_samples(ps.eam, Site == "Lagoon_entrance_east")
-LagoonE.trans <- transform_sample_counts(LagoonE, function(x) x/sum(x)*100)
+# EAM 
+EAM <- subset_samples(glom, Shifting == "EAM")
+EAM.trans <- transform_sample_counts(EAM, function(x) x/sum(x)*100)
 
-n <- length(sample_names(LagoonE.trans))
+n <- length(sample_names(EAM.trans))
 flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(LagoonE.trans, flist)
-LagoonE_core <- prune_taxa(a, LagoonE.trans) 
-LagoonE_core.melt <- psmelt(LagoonE_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-# South_Algae_Flats - 614 CORE
-SAFLats <- subset_samples(ps.eam, Site == "South_Algae_Flats")
-SAFLats.trans <- transform_sample_counts(SAFLats, function(x) x/sum(x)*100)
-
-n <- length(sample_names(SAFLats.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(SAFLats.trans, flist)
-SAFLats_core <- prune_taxa(a, SAFLats.trans) 
-SAFLats_core.melt <- psmelt(SAFLats_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-# Outer_Algae_Flats - 539 CORE
-OAFLats <- subset_samples(ps.eam, Site == "Outer_Algae_Flats")
-OAFLats.trans <- transform_sample_counts(OAFLats, function(x) x/sum(x)*100)
-
-n <- length(sample_names(OAFLats.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(OAFLats.trans, flist)
-OAFLats_core <- prune_taxa(a, OAFLats.trans) 
-OAFLats_core.melt <- psmelt(OAFLats_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
-
-# Keyhole - 418 CORE
-Keyhole <- subset_samples(ps.eam, Site == "Keyhole")
-Keyhole.trans <- transform_sample_counts(Keyhole, function(x) x/sum(x)*100)
-
-n <- length(sample_names(Keyhole.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(Keyhole.trans, flist)
-Keyhole_core <- prune_taxa(a, Keyhole.trans) 
-Keyhole_core.melt <- psmelt(Keyhole_core) %>%
- group_by(Site, OTU, kingdom, phylum, class, order, family, genus) %>%
+a <- filter_taxa(EAM.trans, flist)
+eam_core <- prune_taxa(a, EAM.trans) 
+eam_core.melt <- psmelt(eam_core) %>%
+ group_by(Shifting, Phylum, Class, Order, Family, Genus, OTU) %>%
   summarise(Average_rel = mean(Abundance),
             SE_rel = sd(Abundance)/sqrt(n()))
 
 # Plot
-core_100_site_OTU_eam <- rbind(LagoonW_core.melt, LagoonE_core.melt, Keyhole_core.melt, OAFLats_core.melt, SAFLats_core.melt)
+core_100_eamNonshifting_genus <- rbind(Nonshifting_core.melt, eam_core.melt)
 
-ps.core.eam <- merge_phyloseq(LagoonW_core, LagoonE_core, Keyhole_core, OAFLats_core, SAFLats_core)
-#saveRDS(ps.core, file = "ps.core.eam.rds")
+library(RColorBrewer)
+colourCount = length(unique(core_100_eamNonshifting_genus$Class))
+getPalette = colorRampPalette(brewer.pal(12, "Paired"))
 
-#write.csv(x = core_100_species_otu, file = "core_100_species_otu.csv")
-
-ggplot(core_100_site_OTU_eam, aes(x = Site, y = Average_rel)) +
-    geom_bar(stat = "identity", aes(fill = class), position = "stack") + 
-    scale_fill_d3(palette = "category20") +
+ggplot(core_100_eamNonshifting_genus, aes(x = Shifting, y = Average_rel)) +
+    geom_bar(stat = "identity", aes(fill = Class), position = "stack") +
+    scale_fill_manual(values = getPalette(colourCount)) +
     theme(aspect.ratio = 1, legend.position = "bottom") +
     guides(fill = guide_legend(ncol = 3)) +
     ylab("Relative Abundance (%)") +
-    scale_x_discrete(limits = c("Lagoon_entrance_east", "Lagoon_entrance_west", "Outer_Algae_Flats", "South_Algae_Flats", "Keyhole")) +
     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 ```
-
-## Location
-
-100% GENUS
-
+### Venns
 ```{r}
-glom <- tax_glom(ps.eam, taxrank = "genus")
+library(ggvenn)
 
-# Outer_reef - 129 CORE
-Outerreef <- subset_samples(glom, Location == "Outer_reef")
-Outerreef.trans <- transform_sample_counts(Outerreef, function(x) x/sum(x)*100)
+present_otus <- core_100_eamNonshifting_genus %>%
+  filter(Average_rel > 0)
 
-n <- length(sample_names(Outerreef.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(Outerreef.trans, flist)
-Outerreef_core <- prune_taxa(a, Outerreef.trans) 
-Outerreef_core.melt <- psmelt(Outerreef_core) %>%
- group_by(Location, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
+# Build Venn input
+venn_list <- present_otus %>%
+  group_by(Shifting) %>%
+  summarise(otus = list(unique(OTU))) %>%
+  deframe()
 
-# Lagoon - 215 CORE
-Lagoon <- subset_samples(glom, Location == "Lagoon")
-Lagoon.trans <- transform_sample_counts(Lagoon, function(x) x/sum(x)*100)
 
-n <- length(sample_names(Lagoon.trans))
-flist <- filterfun(kOverA(n, 0))
-a <- filter_taxa(Lagoon.trans, flist)
-Lagoon_core <- prune_taxa(a, Lagoon.trans) 
-Lagoon_core.melt <- psmelt(Lagoon_core) %>%
- group_by(Location, OTU, kingdom, phylum, class, order, family, genus) %>%
-  summarise(Average_rel = mean(Abundance),
-            SE_rel = sd(Abundance)/sqrt(n()))
+paired_nonshift <- c(
+  "#33A02C",  # blue
+  "#1F78B4"   # green
+)
 
-# Plot
-core_100_location_genus_eam <- rbind(Outerreef_core.melt, Lagoon_core.melt)
+venn_nonshift <- present_otus %>%
+  #filter(Shifting != "Range_shifting") %>%
+  group_by(Shifting) %>%
+  summarise(OTUs = list(unique(OTU)), .groups = "drop") %>%
+  deframe()
 
-ggplot(core_100_location_genus_eam, aes(x = Location, y = Average_rel)) +
-    geom_bar(stat = "identity", aes(fill = class), position = "stack") +
-    scale_fill_d3(palette = "category20") +
-    theme(aspect.ratio = 1, legend.position = "bottom") +
-    guides(fill = guide_legend(ncol = 3)) +
-    ylab("Relative Abundance (%)")
+p_eamnonshift <- ggvenn(
+  venn_nonshift,
+  fill_color = paired_nonshift,
+  stroke_size = 0.5,
+  set_name_size = 11,
+  text_size = 11,
+  show_percentage = TRUE
+) +
+  ggtitle("Shared core ASVs between EAM & non-range expanding fish")
+
+ggarrange(p_eamnonshift, p_eamrangeshift,
+                    labels = c("a)", "b)"),
+                    font.label = list(size = 10, colour = "black", face = "plain"),
+                    ncol = 2, nrow = 1) + theme(aspect.ratio = 0.5)
 ```
 
-## Figure S8: 
-Core OTUs - percent shared EAM + fish species
+## Eam vs Fish - ASV - SORENSEN
+### Jaccard or Sørensen overlap
+```{r}
+ps <- readRDS("ps2026.rds")
+
+psfisheam <- subset_samples(ps, Sample_Type != "Water") # Removing water samples
+psfisheam  <- prune_taxa(taxa_sums(psfisheam) > 1, psfisheam)
+
+library(phyloseq)
+library(vegan)
+
+# Ensure OTU table has taxa as rows
+otu_mat <- as(otu_table(psfisheam), "matrix")
+if (!taxa_are_rows(psfisheam)) {
+  otu_mat <- t(otu_mat)
+}
+
+# Convert to presence/absence
+otu_pa <- (otu_mat > 0) * 1
+
+# Update phyloseq object
+otu_table(psfisheam) <- otu_table(otu_pa, taxa_are_rows = TRUE)
+ps_pa <- psfisheam
+
+# Compute similarity matrices
+jaccard_sim <- 1 - as.matrix(vegdist(t(otu_pa), method = "jaccard", binary = TRUE))
+sorensen_sim <- 1 - as.matrix(vegdist(t(otu_pa), method = "bray", binary = TRUE))
+
+# Optional: inspect matrices
+head(jaccard_sim)
+head(sorensen_sim)
+
+# Extract group information
+sample_groups <- sample_data(ps_pa)$Sample_Type  # replace 'Group' with your variable
+sample_ids <- rownames(sample_data(ps_pa))
+
+# Function to compute average similarity between two groups
+average_similarity <- function(sim_matrix, groups, group1, group2) {
+  idx1 <- which(groups == group1)
+  idx2 <- which(groups == group2)
+  sim_values <- sim_matrix[idx1, idx2]
+  mean(sim_values)
+}
+
+# Example: compute average similarity between 'EAM' and 'Gut'
+avg_jaccard_EAM_Gut <- average_similarity(jaccard_sim, sample_groups, "EAM", "Fish")
+avg_sorensen_EAM_Gut <- average_similarity(sorensen_sim, sample_groups, "EAM", "Fish")
+
+library(phyloseq)
+library(ggplot2)
+library(reshape2)
+
+# Compute pairwise Jaccard similarities (as before)
+# shared_matrix is already computed
+ps_eam <- subset_samples(psfisheam, Sample_Type == "EAM")
+ps_gut <- subset_samples(psfisheam, Sample_Type == "Fish")
+
+# Convert OTU tables to presence/absence
+otu_eam <- as(otu_table(ps_eam), "matrix") > 0
+otu_gut <- as(otu_table(ps_gut), "matrix") > 0
+
+# Initialize matrices
+jaccard_matrix <- matrix(NA, nrow = ncol(otu_eam), ncol = ncol(otu_gut))
+sorensen_matrix <- matrix(NA, nrow = ncol(otu_eam), ncol = ncol(otu_gut))
+rownames(jaccard_matrix) <- colnames(otu_eam)
+colnames(jaccard_matrix) <- colnames(otu_gut)
+rownames(sorensen_matrix) <- colnames(otu_eam)
+colnames(sorensen_matrix) <- colnames(otu_gut)
+
+# Compute pairwise similarities
+for(i in 1:ncol(otu_eam)){
+  for(j in 1:ncol(otu_gut)){
+    a <- sum(otu_eam[,i] & otu_gut[,j])          # shared taxa
+    b <- sum(otu_eam[,i] | otu_gut[,j])          # union
+    jaccard_matrix[i,j] <- a / b                 # Jaccard
+    sorensen_matrix[i,j] <- 2 * a / (sum(otu_eam[,i]) + sum(otu_gut[,j]))  # Sørensen
+  }
+}
+
+# Average similarities
+avg_jaccard <- mean(jaccard_matrix)
+avg_sorensen <- mean(sorensen_matrix)
+cat("Average Jaccard similarity (EAM vs Gut):", avg_jaccard, "\n") # Average Jaccard similarity (EAM vs Gut): 0.1570111 
+cat("Average Sørensen similarity (EAM vs Gut):", avg_sorensen, "\n") # Average Sørensen similarity (EAM vs Gut): 0.2589675
+
+# Prepare for plotting (long format)
+jaccard_long <- melt(jaccard_matrix, varnames = c("EAM", "Fish"), value.name = "Similarity")
+sorensen_long <- melt(sorensen_matrix, varnames = c("EAM", "Fish"), value.name = "Similarity")
+
+# Heatmap for Jaccard # Darker blue tiles → higher similarity (more shared taxa) between that EAM–Gut pair.
+ggplot(jaccard_long, aes(x = Fish, y = EAM, fill = Similarity)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(title = "Pairwise Jaccard Similarity (EAM vs Gut)", x = "Fish Samples", y = "EAM Samples") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Heatmap for Sørensen
+ggplot(sorensen_long, aes(x = Fish, y = EAM, fill = Similarity)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "darkgreen") +
+  theme_minimal() +
+  labs(title = "Pairwise Sørensen Similarity (EAM vs Gut)", x = "Fish Samples", y = "EAM Samples") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Create a simple data frame
+avg_similarity <- data.frame(
+  Metric = c("Jaccard", "Sørensen"),
+  Similarity = c(0.1570111, 0.2589675)
+)
+
+# Bar plot
+ggplot(avg_similarity, aes(x = Metric, y = Similarity, fill = Metric)) +
+  geom_col(width = 0.5) +
+  scale_fill_manual(values = c("Jaccard" = "skyblue", "Sørensen" = "orange")) +
+  ylim(0, 1) +
+  theme_minimal() +
+  labs(title = "Average Shared Taxa Similarity between EAM and Fish",
+       y = "Average Similarity", x = "") +
+  geom_text(aes(label = round(Similarity, 3)), vjust = -0.5)
+
+```
+
+# Relative abundance of core to overall relative abundance
+```{r}
+# Extract OTU matrix
+otu <- as(otu_table(ps.fish), "matrix")
+
+# Ensure samples are rows
+if (taxa_are_rows(ps.fish)) {
+  otu <- t(otu)
+}
+
+# Define core taxa
+core_taxa <- taxa_names(ps.core.fishASVtree)
+
+# Calculate core and non-core abundance per sample
+core_sum <- rowSums(
+  otu[, colnames(otu) %in% core_taxa, drop = FALSE]
+)
+
+total_sum <- rowSums(otu)
+
+df_core <- data.frame(
+  Sample = rownames(otu),
+  core = core_sum,
+  other = total_sum - core_sum
+)
+
+# Convert to relative abundance
+df_core <- df_core %>%
+  mutate(
+    core = core / (core + other),
+    other = other / (core + other)
+  )
+
+# Add metadata
+meta <- as(sample_data(ps.fish), "data.frame")
+meta$Sample <- rownames(meta)
+
+df_core <- df_core %>%
+  left_join(meta, by = "Sample")
+
+library(glmmTMB)
+m1 <- glmmTMB(
+  cbind(core, other) ~ Shifting,
+  family = binomial(),
+  data = df_core)
+
+summary(m1)
+
+m2 <- glmmTMB(
+  cbind(core, other) ~ Shifting + Species,
+  family = binomial(),
+  data = df_core)
+drop1(m2, test = "Chisq")
+
+
+
+# Long format for plotting
+df_long <- df_core %>%
+  pivot_longer(
+    cols = c(core, other),
+    names_to = "is_core",
+    values_to = "core_abund"
+  ) %>%
+  mutate(
+    is_core = factor(is_core, levels = c("other", "core"))
+  )
+
+# Plot
+ggplot(df_long, aes(x = Sample, y = core_abund, fill = is_core)) +
+  geom_col(position = "fill", colour = "black") +
+  facet_wrap(~Shifting * Species, scales = "free_x", nrow = 1) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("grey85", "steelblue2")) +
+  theme_classic() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "right",
+    axis.text.x = element_blank()
+  ) +
+  ylab("Relative abundance (%)") +
+  xlab("Replicate")
+
+# Summarise mean core contribution by shifting group
+core_summary <- df_core %>%
+  group_by(Shifting) %>%
+  summarise(
+    mean_core = mean(core, na.rm = TRUE),
+    sd_core = sd(core, na.rm = TRUE),
+    se_core = sd_core / sqrt(n()),
+    n = n(),  .groups = "drop")
+
+```
+
+
+## STATS - Core OTUs - percent shared EAM + fish species
 ```{r}
 # https://www.datanovia.com/en/lessons/anova-in-r/
 library(rstatix)
 library(ggpubr)
 
-sharedcore <- read.table("core_percent_shared.txt", sep = "\t", header = TRUE)
+sharedcore <- read.table("core_percent_shared2026.txt", sep = "\t", header = TRUE)
 
 # Summary statistics table
 sharedcore.summary <- sharedcore %>%
@@ -2419,8 +2593,10 @@ sharedcore.summary <- sharedcore %>%
 
 ggboxplot(sharedcore, x = "Shifting", y = "percent", color = "Shifting", palette = "jco")
 
+# Check normality and homogeneity of variances
 model  <- lm(percent ~ Shifting, data = sharedcore)
 ggqqplot(residuals(model))
+# Shapiro-Wilk test of normality
 shapiro_test(residuals(model))
 
 # homogeneity of variances or Levene's test
@@ -2428,7 +2604,7 @@ sharedcore %>% levene_test(percent ~ Shifting)
 
 # ANOVA
 res.aov <- sharedcore %>% anova_test(percent ~ Shifting)
-res.aov # NOT SIG
+res.aov
 
 # Pairwise comparisons - tukeys
 pwc <- sharedcore %>% tukey_hsd(percent ~ Shifting)
@@ -2444,51 +2620,590 @@ ggboxplot(sharedcore, x = "Shifting", y = "percent",
           caption = get_pwc_label(pwc))
 ```
 
-Core OTUs - relative abundance of shared EAM + fish species
+## STATS - Core OTUs - number of core OTUs in the shared EAM + fish species dataset
 ```{r}
-# https://www.datanovia.com/en/lessons/anova-in-r/
 library(rstatix)
 library(ggpubr)
 
-relabuncore <- read.table("core_relative_abundance_EAM_fish.txt", sep = "\t", header = TRUE)
+sharedcore <- read.table("core_percent_shared2026.txt", sep = "\t", header = TRUE)
 
 # Summary statistics table
-relabuncore.summary <- relabuncore %>%
+sharedcore.summary <- sharedcore %>%
   group_by(Shifting) %>%
-  get_summary_stats(Relabun, type = "mean_se")
+  get_summary_stats(numcoreFISH, type = "mean_se")
 
-ggboxplot(relabuncore, x = "Shifting", y = "Relabun", color = "Shifting", palette = "jco")
-
-# Identify outliers
-relabuncore %>%
-  group_by(Shifting) %>%
-  identify_outliers(Relabun)
+ggboxplot(sharedcore, x = "Shifting", y = "numcoreFISH", color = "Shifting", palette = "jco")
 
 # Check normality and homogeneity of variances
-model  <- lm(Relabun ~ Shifting, data = relabuncore)
+model  <- lm(numcoreFISH ~ Shifting, data = sharedcore)
 ggqqplot(residuals(model))
-shapiro_test(residuals(model))
+# Shapiro-Wilk test of normality
+shapiro_test(residuals(model)) 
 
 # homogeneity of variances or Levene's test
-relabuncore %>% levene_test(Relabun ~ Shifting)  # sig
+sharedcore %>% levene_test(numcoreFISH ~ Shifting)
 
-# Kruskal
-res.kruskal <- relabuncore %>% 
-  kruskal_test(Relabun ~ Shifting)
-res.kruskal
+# ANOVA
+res.aov <- sharedcore %>% anova_test(numcoreFISH ~ Shifting)
+res.aov 
 
-# Pairwise comparisons using Dunn's test:
-pwc <- relabuncore %>% 
-  dunn_test(Relabun ~ Shifting, p.adjust.method = "bonferroni") 
+# Pairwise comparisons - tukeys
+pwc <- sharedcore %>% tukey_hsd(percent ~ Shifting)
 pwc
 
 # Visualization: box plots with p-values
 pwc <- pwc %>% add_xy_position(x = "Shifting")
-ggboxplot(relabuncore, x = "Shifting", y = "Relabun", 
+ggboxplot(sharedcore, x = "Shifting", y = "numcoreFISH", 
           color = "Shifting") +
           stat_pvalue_manual(pwc, hide.ns = TRUE) +
           labs(
-          subtitle = get_test_label(res.kruskal, detailed = TRUE),
+          subtitle = get_test_label(res.aov, detailed = TRUE),
           caption = get_pwc_label(pwc))
 ```
 
+# COMPARE Fish and EAM overlap
+
+## How many taxa are shared between EAM and gut microbiomes?
+
+```{r}
+library(phyloseq)
+library(tidyverse)
+
+ps <- readRDS("ps2026.rds")
+
+psfisheam <- subset_samples(ps, Sample_Type != "Water") # Removing water samples
+psfisheam  <- prune_taxa(taxa_sums(psfisheam) > 1, psfisheam)
+
+# Convert to presence/absence
+otu_pa <- (otu_table(psfisheam) > 0) * 1
+otu_pa <- as(otu_pa, "matrix")
+
+# Sample metadata
+samp_df <- data.frame(sample_data(psfisheam))
+
+all(rownames(otu_pa) %in% rownames(samp_df))
+all(rownames(samp_df) %in% rownames(otu_pa))
+
+taxa_are_rows(psfisheam)
+
+if(taxa_are_rows(psfisheam)) {
+  otu_pa <- t(otu_pa)
+}
+
+common_samples <- intersect(rownames(otu_pa), rownames(samp_df))
+otu_pa <- otu_pa[common_samples, , drop = FALSE]
+samp_df <- samp_df[common_samples, , drop = FALSE]
+
+# Function to compute number of shared ASVs between two groups
+shared_asvs <- function(group1, group2, otu_mat, samp_df, group_var = "Shifting") {
+  samples1 <- rownames(samp_df[samp_df[[group_var]] %in% group1, ])
+  samples2 <- rownames(samp_df[samp_df[[group_var]] %in% group2, ])
+  
+  otu1 <- otu_mat[samples1, , drop = FALSE]
+  otu2 <- otu_mat[samples2, , drop = FALSE]
+  
+  # ASVs present in each group
+  asvs1 <- colSums(otu1) > 0
+  asvs2 <- colSums(otu2) > 0
+  
+  shared_count <- sum(asvs1 & asvs2)
+  total_asvs <- c(sum(asvs1), sum(asvs2))
+  
+  tibble(
+    Group1 = paste(group1, collapse = ", "),
+    Group2 = paste(group2, collapse = ", "),
+    Shared_ASVs = shared_count,
+    ASVs_Group1 = total_asvs[1],
+    ASVs_Group2 = total_asvs[2]
+  )
+}
+
+# Comparisons
+comparisons <- list(
+  c("EAM", "Fish"),
+  c("EAM", "Range_shifting"),
+  c("EAM", "Non_shifting")
+)
+
+# Calculate shared ASVs for each comparison
+shared_results <- map_dfr(comparisons, ~shared_asvs(.x[1], .x[2], otu_pa, samp_df))
+
+print(shared_results)
+summary(shared_results)
+
+                                      
+# Plot shared ASVs
+shared_results_long <- shared_results %>%
+  pivot_longer(cols = c("ASVs_Group1", "ASVs_Group2", "Shared_ASVs"),
+               names_to = "Type", values_to = "Count") %>%
+  mutate(Type = recode(Type,
+                       ASVs_Group1 = "Group1 ASVs",
+                       ASVs_Group2 = "Group2 ASVs",
+                       Shared_ASVs = "Shared ASVs"))
+
+ggplot(shared_results_long, aes(x = interaction(Group1, Group2), y = Count, fill = Type)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(x = "Comparison", y = "Number of ASVs", fill = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+# Number of shared GENERA
+
+```{r}
+library(phyloseq)
+library(tidyverse)
+
+ps <- readRDS("ps2026.rds")
+
+psfisheam <- subset_samples(ps, Sample_Type != "Water") # Removing water samples
+psfisheam  <- prune_taxa(taxa_sums(psfisheam) > 1, psfisheam)
+
+glom <- tax_glom(psfisheam, taxrank = "genus")
+
+# Convert to presence/absence
+otu_pa <- (otu_table(glom) > 0) * 1
+otu_pa <- as(otu_pa, "matrix")
+
+# Sample metadata
+samp_df <- data.frame(sample_data(glom))
+
+all(rownames(otu_pa) %in% rownames(samp_df))
+all(rownames(samp_df) %in% rownames(otu_pa))
+
+taxa_are_rows(glom)
+
+if(taxa_are_rows(glom)) {
+  otu_pa <- t(otu_pa)
+}
+
+common_samples <- intersect(rownames(otu_pa), rownames(samp_df))
+otu_pa <- otu_pa[common_samples, , drop = FALSE]
+samp_df <- samp_df[common_samples, , drop = FALSE]
+
+# Function to compute number of shared ASVs between two groups
+shared_genus <- function(group1, group2, otu_mat, samp_df, group_var = "Shifting") {
+  samples1 <- rownames(samp_df[samp_df[[group_var]] %in% group1, ])
+  samples2 <- rownames(samp_df[samp_df[[group_var]] %in% group2, ])
+  
+  otu1 <- otu_mat[samples1, , drop = FALSE]
+  otu2 <- otu_mat[samples2, , drop = FALSE]
+  
+  # ASVs present in each group
+  asvs1 <- colSums(otu1) > 0
+  asvs2 <- colSums(otu2) > 0
+  
+  shared_count <- sum(asvs1 & asvs2)
+  total_asvs <- c(sum(asvs1), sum(asvs2))
+  
+  tibble(
+    Group1 = paste(group1, collapse = ", "),
+    Group2 = paste(group2, collapse = ", "),
+    Shared_Genus = shared_count,
+    Genus_Group1 = total_asvs[1],
+    Genus_Group2 = total_asvs[2]
+  )
+}
+
+# Comparisons
+comparisons <- list(
+  c("EAM", "Fish"),
+  c("EAM", "Range_shifting"),
+  c("EAM", "Non_shifting")
+)
+
+# Calculate shared ASVs for each comparison
+shared_results <- map_dfr(comparisons, ~shared_genus(.x[1], .x[2], otu_pa, samp_df))
+
+print(shared_results)
+summary(shared_results)
+
+# Plot shared ASVs
+shared_results_long <- shared_results %>%
+  pivot_longer(cols = c("Genus_Group1", "Genus_Group2", "Shared_Genus"),
+               names_to = "Type", values_to = "Count") %>%
+  mutate(Type = recode(Type,
+                       ASVs_Group1 = "Group1 Genus",
+                       ASVs_Group2 = "Group2 Genus",
+                       Shared_ASVs = "Shared Genus"))
+```
+
+### Number of shared CORE ASVs
+
+```{r}
+library(phyloseq)
+library(tidyverse)
+
+ps.corefishEAMASV <- readRDS("ps.corefishEAMASV.rds")
+
+psfisheam <- subset_samples(ps.corefishEAMASV, Sample_Type != "Water") # Removing water samples
+psfisheam  <- prune_taxa(taxa_sums(psfisheam) > 1, psfisheam)
+
+# Convert to presence/absence
+otu_pa <- (otu_table(psfisheam) > 0) * 1
+otu_pa <- as(otu_pa, "matrix")
+
+# Sample metadata
+samp_df <- data.frame(sample_data(psfisheam))
+
+all(rownames(otu_pa) %in% rownames(samp_df))
+all(rownames(samp_df) %in% rownames(otu_pa))
+
+taxa_are_rows(psfisheam)
+
+if(taxa_are_rows(psfisheam)) {
+  otu_pa <- t(otu_pa)
+}
+
+common_samples <- intersect(rownames(otu_pa), rownames(samp_df))
+otu_pa <- otu_pa[common_samples, , drop = FALSE]
+samp_df <- samp_df[common_samples, , drop = FALSE]
+
+# Function to compute number of shared ASVs between two groups
+shared_asvs <- function(group1, group2, otu_mat, samp_df, group_var = "Shifting") {
+  samples1 <- rownames(samp_df[samp_df[[group_var]] %in% group1, ])
+  samples2 <- rownames(samp_df[samp_df[[group_var]] %in% group2, ])
+  
+  otu1 <- otu_mat[samples1, , drop = FALSE]
+  otu2 <- otu_mat[samples2, , drop = FALSE]
+  
+  # ASVs present in each group
+  asvs1 <- colSums(otu1) > 0
+  asvs2 <- colSums(otu2) > 0
+  
+  shared_count <- sum(asvs1 & asvs2)
+  total_asvs <- c(sum(asvs1), sum(asvs2))
+  
+  tibble(
+    Group1 = paste(group1, collapse = ", "),
+    Group2 = paste(group2, collapse = ", "),
+    Shared_ASVs = shared_count,
+    ASVs_Group1 = total_asvs[1],
+    ASVs_Group2 = total_asvs[2]
+  )
+}
+
+# Comparisons
+comparisons <- list(
+  c("EAM", "Fish"),
+  c("EAM", "Range_shifting"),
+  c("EAM", "Non_shifting")
+)
+
+# Calculate shared ASVs for each comparison
+shared_results <- map_dfr(comparisons, ~shared_asvs(.x[1], .x[2], otu_pa, samp_df))
+
+print(shared_results)
+summary(shared_results)
+
+                                      
+# Plot shared ASVs
+shared_results_long <- shared_results %>%
+  pivot_longer(cols = c("ASVs_Group1", "ASVs_Group2", "Shared_ASVs"),
+               names_to = "Type", values_to = "Count") %>%
+  mutate(Type = recode(Type,
+                       ASVs_Group1 = "Group1 ASVs",
+                       ASVs_Group2 = "Group2 ASVs",
+                       Shared_ASVs = "Shared ASVs"))
+
+ggplot(shared_results_long, aes(x = interaction(Group1, Group2), y = Count, fill = Type)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(x = "Comparison", y = "Number of ASVs", fill = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+
+# Compare EAM vs Non_Shifting and EAM vs Range_Shifting
+```{r}
+library(phyloseq)
+library(vegan)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Convert OTU table to presence/absence
+otu_pa <- as(otu_table(psfisheam), "matrix") > 0
+
+# Sample metadata
+samp_df <- as(sample_data(psfisheam), "data.frame")
+
+if(taxa_are_rows(psfisheam)) {
+  otu_pa <- t(otu_pa)
+}
+
+common_samples <- intersect(rownames(otu_pa), rownames(samp_df))
+otu_pa <- otu_pa[common_samples, , drop = FALSE]
+samp_df <- samp_df[common_samples, , drop = FALSE]
+
+# Function to compute average Jaccard and Sørensen similarity between two groups
+compute_similarity <- function(otu_matrix, sample_data, group_var, group1, group2) {
+  samples1 <- rownames(sample_data[sample_data[[group_var]] == group1, ])
+  samples2 <- rownames(sample_data[sample_data[[group_var]] == group2, ])
+  
+  otu1 <- otu_matrix[samples1, , drop = FALSE]
+  otu2 <- otu_matrix[samples2, , drop = FALSE]
+  
+  # Jaccard similarity
+  jaccard_dist <- vegdist(rbind(otu1, otu2), method = "jaccard", binary = TRUE)
+  jaccard_mat <- as.matrix(jaccard_dist)
+  sim_values <- jaccard_mat[1:nrow(otu1), (nrow(otu1)+1):(nrow(otu1)+nrow(otu2))]
+  avg_jaccard <- mean(1 - sim_values)
+  
+  # Sørensen similarity (binary Bray-Curtis)
+  bray_dist <- vegdist(rbind(otu1, otu2), method = "bray", binary = TRUE)
+  bray_mat <- as.matrix(bray_dist)
+  avg_sorensen <- mean(1 - bray_mat)
+  
+  return(data.frame(
+    Comparison = paste(group1, "vs", group2),
+    Jaccard = avg_jaccard,
+    Sorensen = avg_sorensen
+  ))
+}
+
+# Define comparisons
+comparisons <- list(
+  c("EAM", "Non_shifting"),
+  c("EAM", "Range_shifting")
+)
+
+# Run comparisons
+sim_results <- do.call(rbind, lapply(comparisons, function(x) {
+  compute_similarity(otu_pa, samp_df, "Shifting", x[1], x[2])
+}))
+
+print(sim_results)
+
+# Plot
+sim_long <- sim_results %>%
+  pivot_longer(cols = c(Jaccard, Sorensen), names_to = "Metric", values_to = "Similarity")
+
+ggplot(sim_long, aes(x = Comparison, y = Similarity, fill = Comparison)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ylim(0, 1) +
+  labs(title = "Average Microbiome Similarity Between Groups",
+       y = "Similarity",
+       x = "") +
+  theme_minimal() +
+  scale_fill_manual(values = c("steelblue", "darkorange")) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1),
+        legend.position = "none") +
+  facet_wrap(~ Metric, nrow = 1)
+
+```
+
+### Compare CORE EAM vs Non_Shifting and EAM vs Range_Shifting
+```{r}
+library(phyloseq)
+library(vegan)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+ps.corefishEAMASV <- readRDS("ps.corefishEAMASV.rds") 
+
+# Convert OTU table to presence/absence
+otu_pa <- as(otu_table(ps.corefishEAMASV), "matrix") > 0
+
+# Sample metadata
+samp_df <- as(sample_data(ps.corefishEAMASV), "data.frame")
+
+if(taxa_are_rows(ps.corefishEAMASV)) {
+  otu_pa <- t(otu_pa)
+}
+
+common_samples <- intersect(rownames(otu_pa), rownames(samp_df))
+otu_pa <- otu_pa[common_samples, , drop = FALSE]
+samp_df <- samp_df[common_samples, , drop = FALSE]
+
+# Function to compute average Jaccard and Sørensen similarity between two groups
+compute_similarity <- function(otu_matrix, sample_data, group_var, group1, group2) {
+  samples1 <- rownames(sample_data[sample_data[[group_var]] == group1, ])
+  samples2 <- rownames(sample_data[sample_data[[group_var]] == group2, ])
+  
+  otu1 <- otu_matrix[samples1, , drop = FALSE]
+  otu2 <- otu_matrix[samples2, , drop = FALSE]
+  
+  # Jaccard similarity
+  jaccard_dist <- vegdist(rbind(otu1, otu2), method = "jaccard", binary = TRUE)
+  jaccard_mat <- as.matrix(jaccard_dist)
+  sim_values <- jaccard_mat[1:nrow(otu1), (nrow(otu1)+1):(nrow(otu1)+nrow(otu2))]
+  avg_jaccard <- mean(1 - sim_values)
+  
+  # Sørensen similarity (binary Bray-Curtis)
+  bray_dist <- vegdist(rbind(otu1, otu2), method = "bray", binary = TRUE)
+  bray_mat <- as.matrix(bray_dist)
+  avg_sorensen <- mean(1 - bray_mat)
+  
+  return(data.frame(
+    Comparison = paste(group1, "vs", group2),
+    Jaccard = avg_jaccard,
+    Sorensen = avg_sorensen
+  ))
+}
+
+# Define comparisons
+comparisons <- list(
+  c("EAM", "Non_shifting"),
+  c("EAM", "Range_shifting")
+)
+
+# Run comparisons
+sim_results <- do.call(rbind, lapply(comparisons, function(x) {
+  compute_similarity(otu_pa, samp_df, "Shifting", x[1], x[2])
+}))
+
+print(sim_results)
+
+# Plot
+sim_long <- sim_results %>%
+  pivot_longer(cols = c(Jaccard, Sorensen), names_to = "Metric", values_to = "Similarity")
+
+ggplot(sim_long, aes(x = Comparison, y = Similarity, fill = Comparison)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ylim(0, 1) +
+  labs(title = "Average Core Microbiome Similarity Between Groups",
+       y = "Similarity",
+       x = "") +
+  theme_minimal() +
+  scale_fill_manual(values = c("steelblue", "darkorange")) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1),
+        legend.position = "none") +
+  facet_wrap(~ Metric, nrow = 1)
+
+```
+
+
+## Do shared taxa differ between shifting modes and among species?
+Tests whether shifting species retain more or fewer diet-associated microbes.
+
+```{r}
+# If using number of shared taxa:
+  glmmTMB(shared_taxa_count ~ Shifting,
+        family = nbinom2(),
+        random = ~1 | Shifting/Species,
+        data = overlap_df)
+
+# Option B: Proportion data (recommended) For proportion of gut community shared with EAM:
+glmmTMB(prop_shared_adj ~ Shifting,
+        family = beta_family(),
+        random = ~1 | Shifting/Species,
+        data = overlap_df)
+
+drop1(model, test = "Chisq")
+
+library(phyloseq)
+library(tidyverse)
+library(VennDiagram)
+library(gridExtra)
+library(grid)
+
+ps <- readRDS("ps2026.rds")
+
+psfisheam <- subset_samples(ps, Sample_Type != "Water") # Removing water samples
+psfisheam  <- prune_taxa(taxa_sums(psfisheam) > 1, psfisheam)
+
+# Extract sample metadata
+samp_df <- data.frame(sample_data(psfisheam))
+
+# Ensure OTU table has samples as rows
+otu_pa <- otu_table(psfisheam)
+if(taxa_are_rows(otu_pa)) {
+  otu_pa <- t(otu_pa)   # transpose so samples are rows
+}
+otu_pa <- (otu_pa > 0) * 1
+otu_pa <- as(otu_pa, "matrix")
+
+# Align OTU matrix with metadata
+common_samples <- intersect(rownames(otu_pa), rownames(samp_df))
+otu_pa <- otu_pa[common_samples, , drop = FALSE]
+samp_df <- samp_df[common_samples, , drop = FALSE]
+
+# calculate shared ASVs 
+shared_asvs <- function(group1, group2, otu_mat, samp_df, group_var = "Shifting") {
+  samples1 <- rownames(samp_df[samp_df[[group_var]] %in% group1, ])
+  samples2 <- rownames(samp_df[samp_df[[group_var]] %in% group2, ])
+  
+  otu1 <- otu_mat[samples1, , drop = FALSE]
+  otu2 <- otu_mat[samples2, , drop = FALSE]
+  
+  # ASVs present in each group
+  asvs1 <- colSums(otu1) > 0
+  asvs2 <- colSums(otu2) > 0
+  
+  shared_count <- sum(asvs1 & asvs2)
+  total_asvs <- c(sum(asvs1), sum(asvs2))
+  
+  tibble(
+    Group1 = paste(group1, collapse = ", "),
+    Group2 = paste(group2, collapse = ", "),
+    Shared_ASVs = shared_count,
+    ASVs_Group1 = total_asvs[1],
+    ASVs_Group2 = total_asvs[2]
+  )
+}
+
+# Define comparisons
+comparisons <- list(
+  c("EAM", "Range_shifting"),
+  c("EAM", "Non_shifting"),
+  c("EAM", "Fish")  # optional, if Fish is included
+)
+
+# Calculate shared ASVs
+shared_results <- map_dfr(comparisons, ~shared_asvs(.x[1], .x[2], otu_pa, samp_df))
+print(shared_results)
+
+# Venn diagram plotting function
+plot_venn_grob <- function(shared_row) {
+  EAM_only <- shared_row$ASVs_Group1 - shared_row$Shared_ASVs
+  other_only <- shared_row$ASVs_Group2 - shared_row$Shared_ASVs
+  shared <- shared_row$Shared_ASVs
+  
+  # Capture the Venn diagram as a grob
+  grob <- grid.grabExpr(
+    draw.pairwise.venn(
+      area1 = EAM_only + shared,
+      area2 = other_only + shared,
+      cross.area = shared,
+      category = c(shared_row$Group1, shared_row$Group2),
+      fill = c("skyblue", "forestgreen"),
+      alpha = 0.5,
+      cex = 1.5,
+      cat.cex = 1.5,
+      cat.pos = c(-20, 20),
+      print.mode = "raw"
+    )
+  )
+  return(grob)
+}
+
+# Apply to each row of shared_results
+venn_list <- lapply(1:nrow(shared_results), function(i) plot_venn_grob(shared_results[i, ]))
+
+# Arrange side by side
+grid.arrange(grobs = venn_list, ncol = nrow(shared_results))
+```
+### glmmTMB
+```{r}
+library(glmmTMB)
+library(dplyr)
+
+overlap_df <- shared_results %>%
+  mutate(
+    prop_shared = Shared_ASVs / ASVs_Group1,
+    prop_shared_adj = ifelse(prop_shared == 0, 0.001,
+                             ifelse(prop_shared == 1, 0.999, prop_shared)))
+
+# Ensure Shifting and Species are factors
+overlap_df$Shifting <- factor(overlap_df$Group2) 
+overlap_df$Species <- factor(overlap_df$Group1)  
+
+model <- glmmTMB(
+  prop_shared_adj ~ Shifting,
+  family = beta_family(),
+  data = overlap_df
+)
+
+drop1(model, test = "Chisq")
+```
