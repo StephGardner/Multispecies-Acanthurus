@@ -1,0 +1,8 @@
+Shifting	Species	numcoreFISH	percent
+Non_shifting	Acanthurus blochii	255	88.91
+Non_shifting	Acanthurus grammoptilus	170	79.55
+Non_shifting	Acanthurus nigricans	59	89.07
+Non_shifting	Acanthurus nigricauda	210	85.14
+Range_shifting	Acanthurus dussumieri	58	70.43
+Range_shifting	Acanthurus olivaceus	116	78.99
+Range_shifting	Acanthurus triostegus	15	80.44
